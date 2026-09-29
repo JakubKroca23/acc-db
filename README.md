@@ -24,3 +24,5 @@ U každého druhu klikni **Přidat** → otevře se nápověda s filtrem (text +
 - Ceny jsou z veřejných katalogů / orientační — ne závazný ceník.
 - Frontend čte data přes `/api/accessories` a `/api/products` (Vite middleware), API klíč zůstává na serveru.
 - Vlastní výroba je zatím vypnutá.
+
+Produkce: `https://zakazky.contsystem.cz/acc-db/` — deploy `docker compose up -d --build`

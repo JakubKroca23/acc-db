@@ -3,6 +3,7 @@ import type { AccessoryType, CartMap, Product } from './types'
 import { estimateShippingBySupplier, SHIPPING_AVG, type ShippingEstimate } from './shipping'
 
 const STORAGE_KEY = 'acc-db-cart-v2'
+const API_BASE = `${import.meta.env.BASE_URL}api`
 const app = document.querySelector<HTMLDivElement>('#app')!
 if (!app) throw new Error('#app missing')
 
@@ -94,7 +95,7 @@ let picker: PickerState = null
 
 async function loadStats() {
   try {
-    const res = await fetch('/api/stats')
+    const res = await fetch(`${API_BASE}/stats`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     stats = data as DbStats
@@ -108,7 +109,7 @@ async function loadTypes() {
   statusError = false
   render()
   try {
-    const [res] = await Promise.all([fetch('/api/accessories'), loadStats()])
+    const [res] = await Promise.all([fetch(`${API_BASE}/accessories`), loadStats()])
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     types = data.items as AccessoryType[]
@@ -146,7 +147,7 @@ async function refreshPicker() {
     const params = new URLSearchParams({ type: picker.type.slug })
     if (picker.q.trim()) params.set('q', picker.q.trim())
     if (picker.supplier) params.set('supplier', picker.supplier)
-    const res = await fetch(`/api/products?${params}`)
+    const res = await fetch(`${API_BASE}/products?${params}`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     picker.items = data.items as Product[]
@@ -265,7 +266,7 @@ async function hydrateCartProducts() {
   if (!missing.length) return
   // fetch all products once and fill map
   try {
-    const res = await fetch('/api/products')
+    const res = await fetch(`${API_BASE}/products`)
     const data = await res.json()
     if (!res.ok) return
     for (const p of data.items as Product[]) productsById.set(p.id, p)

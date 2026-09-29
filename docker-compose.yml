@@ -1,0 +1,32 @@
+# Kalkulačka příslušenství — https://zakazky.contsystem.cz/acc-db/
+#
+# Deploy:
+#   docker compose up -d --build
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: acc-db-app
+    restart: always
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.acc-db.rule=Host(`zakazky.contsystem.cz`) && PathPrefix(`/acc-db`)"
+      - "traefik.http.routers.acc-db.priority=100"
+      - "traefik.http.routers.acc-db.tls=true"
+      - "traefik.http.routers.acc-db.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.acc-db.tls.domains[0].main=zakazky.contsystem.cz"
+      - "traefik.http.routers.acc-db.service=acc-db"
+      - "traefik.http.services.acc-db.loadbalancer.server.port=4173"
+      - "traefik.docker.network=appwrite"
+    networks:
+      - appwrite
+
+networks:
+  appwrite:
+    external: true
