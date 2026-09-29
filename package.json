@@ -1,0 +1,22 @@
+{
+  "name": "acc-db",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "scrape": "python3 -u scripts/scrape_products.py",
+    "seed": "node scripts/seed.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  },
+  "dependencies": {
+    "appwrite": "^28.1.0",
+    "dotenv": "^18.0.4",
+    "node-appwrite": "^29.0.0"
+  }
+}
