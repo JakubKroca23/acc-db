@@ -56,3 +56,15 @@ export interface CatalogUpdateStatus {
   } | null
   seed: { accessories: number; products: number; created: number; updated: number } | null
 }
+
+export interface PriceHistoryEntry {
+  id: string
+  productId: string
+  oldPrice: number
+  newPrice: number
+  oldPriceVat: number
+  newPriceVat: number
+  recordedAt: string
+  supplier: string | null
+  name: string | null
+}

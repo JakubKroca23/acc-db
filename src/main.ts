@@ -1,5 +1,5 @@
 import './style.css'
-import type { AccessoryType, CartMap, CatalogUpdateStatus, Product, RelatedGroup } from './types'
+import type { AccessoryType, CartMap, CatalogUpdateStatus, PriceHistoryEntry, Product, RelatedGroup } from './types'
 import { estimateShippingBySupplier, type ShippingEstimate } from './shipping'
 
 const STORAGE_KEY = 'acc-db-cart-v2'
@@ -83,6 +83,8 @@ let selectedSlug: string | null = null
 let searchQ = ''
 let supplierFilter = ''
 let viewMode: 'browse' | 'search' | 'quote' = 'browse'
+let priceHistoryCache: Record<string, PriceHistoryEntry[]> = {}
+let historyOpenId: string | null = null
 let cartOpen = false
 
 let catalogItems: Product[] = []
@@ -537,6 +539,49 @@ function relatedStripHtml(): string {
     </section>`
 }
 
+
+function formatHistoryDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString('cs-CZ', { dateStyle: 'short', timeStyle: 'short' })
+  } catch {
+    return iso
+  }
+}
+
+
+function quoteHistoryHint(productId: string): string {
+  const rows = priceHistoryCache[productId]
+  if (!rows || !rows.length) return ''
+  const last = rows[0]
+  return `<div class="muted q-hist">Poslední změna ceny: ${escapeHtml(formatHistoryDate(last.recordedAt))} · ${formatCzkExact(last.oldPriceVat)} → ${formatCzkExact(last.newPriceVat)} s DPH</div>`
+}
+
+function historyPanelHtml(p: Product): string {
+  if (historyOpenId !== p.id) return ''
+  const rows = priceHistoryCache[p.id]
+  if (!rows) {
+    return `<div class="price-history" data-history-panel="${escapeAttr(p.id)}"><span class="muted">Načítám historii…</span></div>`
+  }
+  if (!rows.length) {
+    return `<div class="price-history" data-history-panel="${escapeAttr(p.id)}"><span class="muted">Zatím žádná změna ceny (aktuálně ${dualPrice(p.price, p.priceVat)}).</span></div>`
+  }
+  return `<div class="price-history" data-history-panel="${escapeAttr(p.id)}">
+    <div class="price-history-title">Historie cen</div>
+    <ul>
+      ${rows
+        .map(
+          (h) => `<li>
+            <span class="ph-date">${escapeHtml(formatHistoryDate(h.recordedAt))}</span>
+            <span class="ph-change">${formatCzkExact(h.oldPriceVat)} → <strong>${formatCzkExact(h.newPriceVat)}</strong> s DPH
+              <span class="muted">(${formatCzkExact(h.oldPrice)} → ${formatCzkExact(h.newPrice)} bez DPH)</span>
+            </span>
+          </li>`,
+        )
+        .join('')}
+    </ul>
+  </div>`
+}
+
 function productCardHtml(p: Product): string {
   const qty = cart[p.id] || 0
   const img = p.imageUrl
@@ -568,7 +613,9 @@ function productCardHtml(p: Product): string {
               ? `<a class="link" href="${escapeAttr(p.productUrl)}" target="_blank" rel="noopener noreferrer">Detail</a>`
               : ''
           }
+          <button type="button" class="link history-btn" data-history="${escapeAttr(p.id)}">Historie cen</button>
         </div>
+        ${historyPanelHtml(p)}
       </div>
     </article>`
 }
@@ -614,6 +661,7 @@ function quotePanelHtml(embedded = false): string {
                   (l) => `<tr>
                     <td>
                       <div class="q-name">${escapeHtml(l.product.name)}</div>
+                      ${quoteHistoryHint(l.product.id)}
                       <div class="q-meta">${escapeHtml(typeName(l.product.typeSlug))}
                         ${l.product.dimensions ? ` · ${escapeHtml(l.product.dimensions)}` : ''}
                         ${l.product.sku ? ` · SKU ${escapeHtml(l.product.sku)}` : ''}
@@ -804,7 +852,51 @@ function render() {
   bindEvents()
 }
 
+
+async function togglePriceHistory(productId: string) {
+  if (historyOpenId === productId) {
+    historyOpenId = null
+    render()
+    return
+  }
+  historyOpenId = productId
+  render()
+  if (!priceHistoryCache[productId]) {
+    try {
+      const res = await fetch(`${API_BASE}/price-history?productId=${encodeURIComponent(productId)}`)
+      const data = (await res.json()) as { items?: PriceHistoryEntry[] }
+      priceHistoryCache[productId] = data.items || []
+    } catch {
+      priceHistoryCache[productId] = []
+    }
+    if (historyOpenId === productId) render()
+  }
+  // Prefetch history for quote lines when opening quote
+}
+
+async function prefetchCartHistory() {
+  const ids = Object.keys(cart).filter((id) => cart[id] > 0 && !priceHistoryCache[id])
+  await Promise.all(
+    ids.slice(0, 30).map(async (id) => {
+      try {
+        const res = await fetch(`${API_BASE}/price-history?productId=${encodeURIComponent(id)}`)
+        const data = (await res.json()) as { items?: PriceHistoryEntry[] }
+        priceHistoryCache[id] = data.items || []
+      } catch {
+        priceHistoryCache[id] = []
+      }
+    }),
+  )
+}
+
 function bindEvents() {
+  app.querySelectorAll('[data-history]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = (btn as HTMLElement).dataset.history
+      if (!id) return
+      void togglePriceHistory(id)
+    })
+  })
   app.querySelectorAll<HTMLButtonElement>('[data-type]').forEach((btn) => {
     btn.addEventListener('click', () => selectType(btn.dataset.type!))
   })
@@ -841,6 +933,7 @@ function bindEvents() {
 
   app.querySelector('[data-action="open-quote"]')?.addEventListener('click', () => {
     viewMode = 'quote'
+    void prefetchCartHistory().then(() => render())
     cartOpen = true
     render()
   })

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { Client, TablesDB, Permission, Role, Query } from 'node-appwrite'
+import { Client, TablesDB, Permission, Role, Query, ID } from 'node-appwrite'
 
 const endpoint = process.env.APPWRITE_ENDPOINT
 const projectId = process.env.APPWRITE_PROJECT_ID
@@ -61,6 +61,42 @@ function safeUrl(value) {
 const client = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey)
 const db = new TablesDB(client)
 
+async function ensurePriceHistoryTable() {
+  try {
+    await db.getTable({ databaseId, tableId: 'price_history' })
+    console.log('price_history table ok')
+    return
+  } catch {
+    /* create below */
+  }
+  console.log('creating price_history table…')
+  await db.createTable({
+    databaseId,
+    tableId: 'price_history',
+    name: 'price_history',
+    permissions: [Permission.read(Role.any())],
+    rowSecurity: false,
+    enabled: true,
+    columns: [
+      { key: 'productId', type: 'varchar', size: 64, required: true },
+      { key: 'oldPrice', type: 'double', required: true },
+      { key: 'newPrice', type: 'double', required: true },
+      { key: 'oldPriceVat', type: 'double', required: true },
+      { key: 'newPriceVat', type: 'double', required: true },
+      { key: 'recordedAt', type: 'datetime', required: true },
+      { key: 'supplier', type: 'varchar', size: 128, required: false },
+      { key: 'name', type: 'varchar', size: 255, required: false },
+    ],
+    indexes: [
+      { key: 'productId_idx', type: 'key', attributes: ['productId'] },
+      { key: 'recordedAt_idx', type: 'key', attributes: ['recordedAt'] },
+    ],
+  })
+  console.log('price_history created')
+}
+
+await ensurePriceHistoryTable()
+
 const REMOVE_ACCESSORIES = ['kos-na-sit', 'meziram', 'zadni-zabrana']
 for (const id of REMOVE_ACCESSORIES) {
   try {
@@ -90,38 +126,39 @@ for (const item of accessories) {
   }
 }
 
-// Remove products whose typeSlug is no longer in taxonomy (except keep during partial runs)
+// Collect stale product IDs first, then delete — never delete mid-cursor pagination
+// (Appwrite cursorAfter fails with general_cursor_not_found if the cursor row was removed).
 let deletedProducts = 0
-let cursor
 const keepIds = new Set(products.filter((p) => p.typeSlug !== 'zadni-zabrana').map(productId))
+const staleIds = []
+let listCursor
 for (;;) {
   const queries = [Query.limit(100)]
-  if (cursor) queries.push(Query.cursorAfter(cursor))
+  if (listCursor) queries.push(Query.cursorAfter(listCursor))
   const batch = await db.listRows({ databaseId, tableId: 'products', queries })
   if (!batch.rows.length) break
   for (const row of batch.rows) {
     const typeSlug = row.typeSlug
-    const shouldDelete =
-      typeSlug === 'zadni-zabrana' ||
-      (keepSlugs.has(typeSlug) === false && typeSlug) ||
-      (keepSlugs.has(typeSlug) && !keepIds.has(row.$id))
-    // Only aggressively delete unknown types that look obsolete; keep unknown during migration
     if (typeSlug === 'zadni-zabrana' || (keepSlugs.has(typeSlug) && !keepIds.has(row.$id))) {
-      try {
-        await db.deleteRow({ databaseId, tableId: 'products', rowId: row.$id })
-        deletedProducts++
-      } catch {
-        /* ignore */
-      }
+      staleIds.push(row.$id)
     }
   }
   if (batch.rows.length < 100) break
-  cursor = batch.rows[batch.rows.length - 1].$id
+  listCursor = batch.rows[batch.rows.length - 1].$id
+}
+for (const rowId of staleIds) {
+  try {
+    await db.deleteRow({ databaseId, tableId: 'products', rowId })
+    deletedProducts++
+  } catch {
+    /* ignore */
+  }
 }
 console.log('deleted stale products', deletedProducts)
 
 let created = 0
 let updated = 0
+let priceChanges = 0
 for (const p of products) {
   if (p.typeSlug === 'zadni-zabrana') continue
   if (!keepSlugs.has(p.typeSlug)) continue
@@ -140,7 +177,32 @@ for (const p of products) {
     note: p.note || null,
   }
   try {
-    await db.getRow({ databaseId, tableId: 'products', rowId })
+    const existing = await db.getRow({ databaseId, tableId: 'products', rowId })
+    const oldPrice = Number(existing.price)
+    const oldPriceVat = Number(existing.priceVat)
+    const priceChanged =
+      Number.isFinite(oldPrice) &&
+      Number.isFinite(oldPriceVat) &&
+      (Math.abs(oldPrice - data.price) > 0.009 || Math.abs(oldPriceVat - data.priceVat) > 0.009)
+    if (priceChanged) {
+      await db.createRow({
+        databaseId,
+        tableId: 'price_history',
+        rowId: ID.unique(),
+        data: {
+          productId: rowId,
+          oldPrice,
+          newPrice: data.price,
+          oldPriceVat,
+          newPriceVat: data.priceVat,
+          recordedAt: new Date().toISOString(),
+          supplier: data.supplier,
+          name: data.name,
+        },
+        permissions: [Permission.read(Role.any())],
+      })
+      priceChanges++
+    }
     await db.updateRow({ databaseId, tableId: 'products', rowId, data })
     updated++
   } catch {
@@ -160,8 +222,16 @@ for (const p of products) {
 
 const acc = await db.listRows({ databaseId, tableId: 'accessories', queries: [Query.limit(100)] })
 const prod = await db.listRows({ databaseId, tableId: 'products', queries: [Query.limit(1)] })
+let historyTotal = 0
+try {
+  const ph = await db.listRows({ databaseId, tableId: 'price_history', queries: [Query.limit(1)] })
+  historyTotal = ph.total
+} catch {
+  /* ignore */
+}
 console.log(`accessories: ${acc.total}`)
 console.log(`products: ${prod.total} (created ${created}, updated ${updated})`)
+console.log(`price_history: ${historyTotal} (new changes this run ${priceChanges})`)
 console.log(
   JSON.stringify({
     ok: true,
@@ -170,5 +240,7 @@ console.log(
     created,
     updated,
     deletedProducts,
+    priceChanges,
+    priceHistoryTotal: historyTotal,
   }),
 )

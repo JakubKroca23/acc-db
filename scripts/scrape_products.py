@@ -7,6 +7,7 @@ Fixes vs first version:
 - Trans-Technik has BOTH product-types-card and product-types-table pages
 - TT card prices are WITHOUT VAT (not with VAT)
 - Discover TT leaf pages that contain products (cards or tables)
+- Hydrotruck: ?str=PAGE pagination + insecure-SSL fallback; pad/holder reclassify
 """
 from __future__ import annotations
 
@@ -40,12 +41,15 @@ def norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def get(url: str, retries: int = 3) -> str:
+def get(url: str, retries: int = 3, insecure: bool = False) -> str:
+    """Fetch URL. For Hydrotruck SSL failures, callers may retry with insecure=True."""
+    import ssl
     last: Exception | None = None
     for i in range(retries):
         try:
             req = Request(url, headers=UA)
-            with urlopen(req, timeout=35) as r:
+            ctx = ssl._create_unverified_context() if insecure else None
+            with urlopen(req, timeout=35, context=ctx) as r:
                 data = r.read().decode("utf-8", "ignore")
             time.sleep(SLEEP)
             return data
@@ -53,6 +57,14 @@ def get(url: str, retries: int = 3) -> str:
             last = e
             time.sleep(0.7 * (i + 1))
     raise last  # type: ignore
+
+
+def get_ht(url: str) -> str:
+    try:
+        return get(url)
+    except Exception as e1:
+        emit_progress(f"HT SSL/network fallback (insecure) for {url.split('/')[-1]}: {e1}")
+        return get(url, insecure=True)
 
 
 def parse_price(s: str) -> float | None:
@@ -348,8 +360,17 @@ def parse_tt_list(url: str, type_slug: str) -> list[dict]:
 
 # ── Hydrotruck ─────────────────────────────────────────────────────
 
-def parse_ht_list(url: str, type_slug: str) -> list[dict]:
-    html = get(url)
+def ht_reclassify_slug(name: str, type_slug: str) -> str:
+    """Pads vs boxes/cages for pads — mixed HT category pages can leak either way."""
+    n = name.lower()
+    if "držák podložek" in n or "drzak podlozek" in n or re.search(r"\bbox\s*\d+", n):
+        return "klece-na-podkladaci-desky"
+    if "podložka pod" in n or "podlozka pod" in n or "pod patky" in n:
+        return "podkladaci-desky"
+    return type_slug
+
+
+def parse_ht_page(html: str, type_slug: str) -> list[dict]:
     out: list[dict] = []
     for part in re.split(r'class="product-card"', html)[1:]:
         href_m = re.search(r'href="(/[^"#?]+)"', part)
@@ -379,6 +400,7 @@ def parse_ht_list(url: str, type_slug: str) -> list[dict]:
         img = img_m.group(1) if img_m else None
         if img and not img.startswith("http"):
             img = urljoin("https://www.hydrotruck.cz", img)
+        slug = ht_reclassify_slug(full, type_slug)
         out.append(
             {
                 "name": full[:220],
@@ -388,11 +410,41 @@ def parse_ht_list(url: str, type_slug: str) -> list[dict]:
                 "productUrl": urljoin("https://www.hydrotruck.cz", href_m.group(1)),
                 "dimensions": dims_from_text(full),
                 "supplier": "Hydrotruck",
-                "typeSlug": type_slug,
+                "typeSlug": slug,
                 "unit": "ks",
                 "sku": None,
             }
         )
+    return out
+
+
+def parse_ht_list(url: str, type_slug: str, max_pages: int = 12) -> list[dict]:
+    """Hydrotruck uses ?str=PAGE pagination (1-based). SSL may fail — get_ht falls back."""
+    out: list[dict] = []
+    seen_urls: set[str] = set()
+    for page in range(1, max_pages + 1):
+        page_url = url if page == 1 else (url + ("&" if "?" in url else "?") + f"str={page}")
+        try:
+            html = get_ht(page_url)
+        except Exception as e:
+            emit_progress(f"HT ERR page {page} {type_slug}: {e}")
+            break
+        batch = parse_ht_page(html, type_slug)
+        fresh = []
+        for item in batch:
+            pu = item.get("productUrl") or item["name"]
+            if pu in seen_urls:
+                continue
+            seen_urls.add(pu)
+            fresh.append(item)
+        if not fresh and page > 1:
+            break
+        out.extend(fresh)
+        if page == 1 and not batch:
+            break
+        # stop when page returned fewer than a full grid (HT shows ~12)
+        if page > 1 and len(batch) < 12:
+            break
     return out
 
 
@@ -511,44 +563,55 @@ def main() -> None:
                 "unit": "L",
                 "sku": None,
             },
-            {
-                "name": "Podkládací deska dřevěná 300×300 mm",
-                "price": 372,
-                "priceVat": 450,
-                "imageUrl": None,
-                "productUrl": None,
-                "dimensions": "300 × 300 mm",
-                "supplier": "tržní odhad",
-                "typeSlug": "podkladaci-desky",
-                "unit": "ks",
-                "sku": None,
-            },
-            {
-                "name": "Podkládací deska dřevěná 400×400 mm",
-                "price": 537,
-                "priceVat": 650,
-                "imageUrl": None,
-                "productUrl": None,
-                "dimensions": "400 × 400 mm",
-                "supplier": "tržní odhad",
-                "typeSlug": "podkladaci-desky",
-                "unit": "ks",
-                "sku": None,
-            },
-            {
-                "name": "Podkládací deska plastová 300×300 mm",
-                "price": 736,
-                "priceVat": 890,
-                "imageUrl": None,
-                "productUrl": None,
-                "dimensions": "300 × 300 mm",
-                "supplier": "tržní odhad",
-                "typeSlug": "podkladaci-desky",
-                "unit": "ks",
-                "sku": None,
-            },
         ]
     )
+    # Fallback market estimates only when Hydrotruck pad scrape yielded nothing
+    # (SSL/network issues from some hosts — run scrape from a network that can reach HT).
+    if not any(p.get("typeSlug") == "podkladaci-desky" for p in all_items):
+        emit_progress(
+            "WARN: no podkladaci-desky from scrape — using market-estimate fallback "
+            "(prefer Hydrotruck /podlozky-pod-patky-podper)"
+        )
+        all_items.extend(
+            [
+                {
+                    "name": "Podkládací deska dřevěná 300×300 mm",
+                    "price": 372,
+                    "priceVat": 450,
+                    "imageUrl": None,
+                    "productUrl": None,
+                    "dimensions": "300 × 300 mm",
+                    "supplier": "tržní odhad",
+                    "typeSlug": "podkladaci-desky",
+                    "unit": "ks",
+                    "sku": None,
+                },
+                {
+                    "name": "Podkládací deska dřevěná 400×400 mm",
+                    "price": 537,
+                    "priceVat": 650,
+                    "imageUrl": None,
+                    "productUrl": None,
+                    "dimensions": "400 × 400 mm",
+                    "supplier": "tržní odhad",
+                    "typeSlug": "podkladaci-desky",
+                    "unit": "ks",
+                    "sku": None,
+                },
+                {
+                    "name": "Podkládací deska plastová 300×300 mm",
+                    "price": 736,
+                    "priceVat": 890,
+                    "imageUrl": None,
+                    "productUrl": None,
+                    "dimensions": "300 × 300 mm",
+                    "supplier": "tržní odhad",
+                    "typeSlug": "podkladaci-desky",
+                    "unit": "ks",
+                    "sku": None,
+                },
+            ]
+        )
 
     final = [p for p in dedupe(all_items) if p["typeSlug"] != "zadni-zabrana"]
     OUT.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")

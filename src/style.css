@@ -812,3 +812,41 @@ textarea {
     display: none;
   }
 }
+
+.history-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+}
+.price-history {
+  margin-top: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2, #f4f6f8) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border, #d0d7de) 80%, transparent);
+  font-size: 0.82rem;
+}
+.price-history-title {
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+.price-history ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.price-history li {
+  display: grid;
+  gap: 0.1rem;
+}
+.ph-date {
+  color: var(--muted, #667085);
+}
+.q-hist {
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+}

@@ -331,6 +331,37 @@ export function createApiHandler(env: Record<string, string>) {
         return
       }
 
+      if (method === 'GET' && pathOnly === '/api/price-history') {
+        const u = new URL(url, 'http://localhost')
+        const productId = (u.searchParams.get('productId') || '').trim()
+        if (!productId) {
+          json(res, 400, { error: 'productId required' })
+          return
+        }
+        try {
+          const rows = await fetchAllRows('price_history', [
+            Query.equal('productId', productId),
+            Query.orderDesc('recordedAt'),
+          ])
+          const items = rows.map((row) => ({
+            id: row.$id as string,
+            productId: row.productId as string,
+            oldPrice: Number(row.oldPrice),
+            newPrice: Number(row.newPrice),
+            oldPriceVat: Number(row.oldPriceVat),
+            newPriceVat: Number(row.newPriceVat),
+            recordedAt: row.recordedAt as string,
+            supplier: (row.supplier as string) || null,
+            name: (row.name as string) || null,
+          }))
+          json(res, 200, { items, total: items.length })
+        } catch (err) {
+          // Table may not exist yet before first seed
+          json(res, 200, { items: [], total: 0 })
+        }
+        return
+      }
+
       if (method === 'GET' && pathOnly === '/api/catalog/update/status') {
         json(res, 200, getCatalogUpdateStatus())
         return

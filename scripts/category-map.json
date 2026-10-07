@@ -1,35 +1,11 @@
 {
   "groups": [
-    {
-      "id": "blatniky-kit",
-      "label": "Blatníky a příslušenství",
-      "slugs": ["blatniky", "drzaky-blatniku", "zasterky-do-blatniku"]
-    },
-    {
-      "id": "boxy-kit",
-      "label": "Boxy na nářadí a držáky",
-      "slugs": ["box-na-naradi", "drzaky-boxu"]
-    },
-    {
-      "id": "hasici-kit",
-      "label": "Hasicí přístroje a držáky",
-      "slugs": ["hasici-pristroj", "drzaky-hasicu"]
-    },
-    {
-      "id": "voda-kit",
-      "label": "Nádoby na vodu a držáky",
-      "slugs": ["nadoba-na-vodu", "drzaky-kanystru"]
-    },
-    {
-      "id": "podkladaci-kit",
-      "label": "Podkládací desky a klece",
-      "slugs": ["podkladaci-desky", "klece-na-podkladaci-desky"]
-    },
-    {
-      "id": "hydraulika-kit",
-      "label": "Hydraulika",
-      "slugs": ["cerpadlo", "olejova-nadrz", "hydraulicky-olej"]
-    }
+    {"id": "blatniky-kit", "label": "Blatníky a příslušenství", "slugs": ["blatniky", "drzaky-blatniku", "zasterky-do-blatniku"]},
+    {"id": "boxy-kit", "label": "Boxy na nářadí a držáky", "slugs": ["box-na-naradi", "drzaky-boxu"]},
+    {"id": "hasici-kit", "label": "Hasicí přístroje a držáky", "slugs": ["hasici-pristroj", "drzaky-hasicu"]},
+    {"id": "voda-kit", "label": "Nádoby na vodu a držáky", "slugs": ["nadoba-na-vodu", "drzaky-kanystru"]},
+    {"id": "podkladaci-kit", "label": "Podložky pod podpěry a boxy", "slugs": ["podkladaci-desky", "klece-na-podkladaci-desky"]},
+    {"id": "hydraulika-kit", "label": "Hydraulika", "slugs": ["cerpadlo", "olejova-nadrz", "hydraulicky-olej"]}
   ],
   "accessories": [
     {"slug": "blatniky", "name": "Blatníky", "category": "Podvozek", "unit": "ks", "priceApprox": 1400, "sortOrder": 10, "parentSlug": null, "relatedGroup": "blatniky-kit"},
@@ -51,8 +27,8 @@
     {"slug": "olejova-nadrz", "name": "Olejová nádrž", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 15000, "sortOrder": 140, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
     {"slug": "pracovni-svetla", "name": "Pracovní světla", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 1440, "sortOrder": 150, "parentSlug": null, "relatedGroup": null},
     {"slug": "navarovaci-oko", "name": "Navařovací oko", "category": "Hákový nosič kontejneru", "unit": "ks", "priceApprox": 450, "sortOrder": 160, "parentSlug": null, "relatedGroup": null},
-    {"slug": "klece-na-podkladaci-desky", "name": "Klece na podkládací desky", "category": "Ostatní", "unit": "ks", "priceApprox": 8500, "sortOrder": 190, "parentSlug": null, "relatedGroup": "podkladaci-kit"},
-    {"slug": "podkladaci-desky", "name": "Podkládací desky", "category": "Ostatní", "unit": "ks", "priceApprox": 1200, "sortOrder": 200, "parentSlug": null, "relatedGroup": "podkladaci-kit"},
+    {"slug": "klece-na-podkladaci-desky", "name": "Boxy / klece na podkládací desky", "category": "Ostatní", "unit": "ks", "priceApprox": 2500, "sortOrder": 191, "parentSlug": "podkladaci-desky", "relatedGroup": "podkladaci-kit"},
+    {"slug": "podkladaci-desky", "name": "Podložky pod podpěry (podkládací desky)", "category": "Ostatní", "unit": "ks", "priceApprox": 1600, "sortOrder": 190, "parentSlug": null, "relatedGroup": "podkladaci-kit"},
     {"slug": "vazaci-prostredky", "name": "Vázací prostředky", "category": "Ostatní", "unit": "ks", "priceApprox": 800, "sortOrder": 210, "parentSlug": null, "relatedGroup": null}
   ],
   "alsap": [
@@ -88,8 +64,7 @@
     {"typeSlug": "uzivatelska-zasuvka", "url": "https://www.alsap.cz/zasuvky-zastrcky-a-konektory-c520/"},
     {"typeSlug": "navarovaci-oko", "url": "https://www.alsap.cz/oka-upevnovaci-c31/"},
     {"typeSlug": "vazaci-prostredky", "url": "https://www.alsap.cz/upinaci-popruhy-c1320/"},
-    {"typeSlug": "vazaci-prostredky", "url": "https://www.alsap.cz/airline-upinaci-popruhy-c963/"},
-    {"typeSlug": "klece-na-podkladaci-desky", "url": "https://www.alsap.cz/kose-na-palety-c604/"}
+    {"typeSlug": "vazaci-prostredky", "url": "https://www.alsap.cz/airline-upinaci-popruhy-c963/"}
   ],
   "transTechnik": [
     {"typeSlug": "blatniky", "url": "https://www.trans-technik.cz/dily-na-nastavby-02-blatniky-a-prislusenstvi-blatniky"},
@@ -121,6 +96,10 @@
     {"typeSlug": "cerpadlo", "url": "https://www.hydrotruck.cz/cerpadla/hydraulicka-cerpadla/zubova-hydraulicka-cerpadla"},
     {"typeSlug": "cerpadlo", "url": "https://www.hydrotruck.cz/cerpadla/hydraulicka-cerpadla/pistova-hydraulicka-cerpadla"},
     {"typeSlug": "box-na-naradi", "url": "https://www.hydrotruck.cz/boxy-ulozne/easy"},
-    {"typeSlug": "pracovni-svetla", "url": "https://www.hydrotruck.cz/pracovni-svetla/led-reflektory"}
+    {"typeSlug": "pracovni-svetla", "url": "https://www.hydrotruck.cz/pracovni-svetla/led-reflektory"},
+    {"typeSlug": "podkladaci-desky", "url": "https://www.hydrotruck.cz/podlozky-pod-patky-podper/fsb"},
+    {"typeSlug": "podkladaci-desky", "url": "https://www.hydrotruck.cz/podlozky-pod-patky-podper/fsb-sl"},
+    {"typeSlug": "podkladaci-desky", "url": "https://www.hydrotruck.cz/podlozky-pod-patky-podper/fsbr"},
+    {"typeSlug": "klece-na-podkladaci-desky", "url": "https://www.hydrotruck.cz/podlozky-pod-patky-podper/drzaky-podlozek"}
   ]
 }

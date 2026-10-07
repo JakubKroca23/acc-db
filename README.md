@@ -10,6 +10,7 @@ Produkce: https://zakazky.contsystem.cz/acc-db/
 - Procházení kategorií (Podvozek, Všechny nástavby, Hákový nosič, Ostatní)
 - Globální vyhledávání + filtr dodavatele
 - **Související** skupiny (např. blatníky ↔ držáky ↔ zástěrky; boxy ↔ držáky boxů)
+- **Historie cen** při seedu (tabulka `price_history`) — v detailu produktu / nabídce
 - Košík / **cenová nabídka** s mezisoučty dle dodavatele, dopravou, tiskem/PDF, CSV a kopírováním do schránky
 - Tlačítko **Aktualizovat katalog** (scrape + seed) se stavem průběhu
 
@@ -31,6 +32,7 @@ npm run dev            # http://localhost:5173/acc-db/
 | GET | `/api/accessories` | druhy příslušenství |
 | GET | `/api/products?type=&supplier=&q=` | produkty |
 | GET | `/api/stats` | statistiky + poslední update |
+| GET | `/api/price-history?productId=` | historie změn ceny produktu |
 | POST | `/api/catalog/update` | spustí scrape+seed (volitelně `X-Update-Token`) |
 | GET | `/api/catalog/update/status` | stav jobu |
 
@@ -45,7 +47,7 @@ Related skupiny (kits):
 - box na nářadí + držáky boxů
 - hasicí bedny + držáky hasičů
 - nádoby na vodu + držáky kanystrů
-- podkládací desky + klece
+- podložky pod podpěry (podkládací desky) + boxy/klece na tyto desky (Hydrotruck)
 - čerpadlo + olejová nádrž + olej
 
 ## Scraper
@@ -82,5 +84,6 @@ Pokud `APPWRITE_API_KEY` není platný, API automaticky čte `scripts/scraped_pr
 a `scripts/category-map.json` (vhodné pro vývoj a demo). Pro produkční sync spusťte
 `npm run seed` s klíčem, který má práva na TablesDB `acc-db`.
 
-Hydrotruck scrape může selhat na SSL z některých sítí — scrapery zachovají dříve
-stažené Hydrotruck položky, pokud je sloučíte ručně nebo běžíte scrape z povolené sítě.
+Hydrotruck scrape může selhat na SSL z některých sítí — skript zkusí insecure fallback;
+podložky pod podpěry / boxy na desky jsou na `hydrotruck.cz/podlozky-pod-patky-podper`.
+Pokud HT zůstane nedostupný, seed použije tržní odhad jen pro podkládací desky.
