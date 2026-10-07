@@ -68,6 +68,9 @@ export const SYSTEM_PROMPT_LOCAL = [
   '- Karta produktu: cena bez DPH a s DPH, „Přidat do nabídky“ (pak − +), „Historie cen“, „Detail ↗“ = web dodavatele.',
   '- Tlačítko „Cenová nabídka“ vpravo nahoře: položky, množství, odhad dopravy, součty, Poznámka, Kopírovat, CSV, Tisk / PDF, Vymazat nabídku. Nabídka se ukládá pro Vašeho uživatele.',
   'Produkty ani ceny si nevymýšlej – poraď, ať se zeptá konkrétně (např. „Najdi blatníky do 500 Kč“), pak je dohledáte v katalogu. Odkaz na nabídku napiš jako [[nabidka|Otevřít nabídku]].',
+  'Pravidla odpovědi: odpověz přímo na otázku jako první větou; nabídni jeden konkrétní další krok; když něco nevíš, řekni to. Z poskytnutých faktů nic neměň (ceny, kódy, odkazy).',
+  'Příklad: „Kde najdu historii cen?“ → „Otevřete kartu produktu a klikněte na „Historie cen“. Chcete, abych nějaký produkt vyhledal?“',
+  'Příklad: „Jak vytisknu nabídku?“ → „V Cenové nabídce klikněte na „Tisk / PDF“. [[nabidka|Otevřít nabídku]]“',
 ].join('\n')
 
 /** Cloud helper doing the tool work for the local model: minimal prompt to save tokens. */
@@ -75,7 +78,7 @@ export const SYSTEM_PROMPT_DELEGATE = [
   'Jsi Kapitán Karel, asistent katalogu příslušenství pro nákladní vozidla (dodavatelé ALSAP, Trans-Technik, Hydrotruck). Uživateli vždy vykej.',
   '- Produkty a ceny zjisti nástroji, nic si nevymýšlej; akce v aplikaci dělej jen na žádost, id ber jen z výsledků nástrojů. Ceny uváděj s „bez DPH“ / „s DPH“.',
   '- Odkazy jako tlačítka: [[produkt:ID|Zobrazit]], [[pridat:ID|Přidat do nabídky]], [[kategorie:SLUG|Název]], [[nabidka|Otevřít nabídku]]; ID a SLUG (kategorie_slug) ber jen z výsledků nástrojů.',
-  '- Odpověz 1–3 větami prostým textem bez Markdownu.',
+  '- Tvůj výstup čte jiný model, ne uživatel: vrať jen stručná ověřená fakta (název, cena bez/s DPH, kód, rozměr) po jednom produktu na řádek s odkazy; bez úvodu a bez omáčky.',
 ].join('\n')
 
 /** Compact 'where am I' line for the local model (page / category / search / open product) instead of the full screen context. */
@@ -644,7 +647,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
   }
 
   /** One OpenAI-compatible call (GroqCloud / Gemini, streamed). Text deltas go to onText right away; tool calls are collected. */
-  async function cloudRound(cloud: Cloud, m: string, msgs: Msg[], toolDefs: ToolDef[], forceText: boolean, signal: AbortSignal, onText: (t: string) => void, onFirst: () => void): Promise<Round> {
+  async function cloudRound(cloud: Cloud, m: string, msgs: Msg[], toolDefs: ToolDef[], forceText: boolean, signal: AbortSignal, onText: (t: string) => void, onFirst: () => void, onUsage?: (tokens: number) => void): Promise<Round> {
     const { limits, title } = cloud
     limits.noteRequest(m)
     let r: Response
@@ -727,7 +730,10 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         if (tc.function?.arguments) calls[i].args += tc.function.arguments
       }
       const usage = o.usage || o.x_groq?.usage
-      if (usage?.total_tokens) limits.noteUsage(m, usage.total_tokens, usage.prompt_tokens_details?.cached_tokens || 0)
+      if (usage?.total_tokens) {
+        limits.noteUsage(m, usage.total_tokens, usage.prompt_tokens_details?.cached_tokens || 0)
+        onUsage?.(usage.total_tokens)
+      }
     }
     return {
       text,
@@ -892,7 +898,13 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     let anyText = false
     let actions = 0
     const done = new Set<string>()
+    let delegateTokens = 0
+    let delegateText = '' // the helper only gathers facts; the local model writes the answer from them
     const onText = (t: string) => {
+      if (delegate) {
+        delegateText += t
+        return
+      }
       anyText = true
       fullText += t
       line({ message: { role: 'assistant', content: t }, done: false })
@@ -934,7 +946,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         first = undefined
       }
       try {
-        return cloud ? await cloudRound(cloud, runModel, convo, defs, forceText, rc.signal, onText, onFirst) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
+        return cloud ? await cloudRound(cloud, runModel, convo, defs, forceText, rc.signal, onText, onFirst, (n) => (delegateTokens += n)) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
       } finally {
         onFirst()
         ctrl.signal.removeEventListener('abort', abort)
@@ -993,10 +1005,38 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
           )
         }
       }
+      if (delegate && delegateText.trim()) {
+        const facts = delegateText.trim()
+        const emit = (t: string) => {
+          anyText = true
+          fullText += t
+          line({ message: { role: 'assistant', content: t }, done: false })
+        }
+        line({ type: 'status', text: 'Karel formuluje odpověď…' })
+        const lastQ = messages[messages.length - 1].content
+        const compose = promptMessages(messages, null, SYSTEM_PROMPT_LOCAL)
+        compose[compose.length - 1] = { role: 'user', content: `Dotaz: ${lastQ}\n\nOvěřená fakta z katalogu (odpověz jen z nich, nic nepřidávej; odkazy [[…]] opiš beze změny):\n${facts}` }
+        const rc = new AbortController()
+        const abort = () => rc.abort()
+        ctrl.signal.addEventListener('abort', abort)
+        const guard = setTimeout(() => rc.abort(), 45_000) // slow CPU → fall back to the helper's facts
+        let composed = ''
+        try {
+          await ollamaRound(compose, [], rc.signal, (t) => (composed += t), () => {})
+        } catch (err) {
+          if (ctrl.signal.aborted) throw err
+          console.warn('[acc-db chat] local compose failed, using helper text:', errText(err))
+        } finally {
+          clearTimeout(guard)
+          ctrl.signal.removeEventListener('abort', abort)
+        }
+        emit(composed.trim() ? composed : facts)
+      }
       if (!anyText) onText(actions ? 'Hotovo.' : 'Promiňte, odpověď se nepodařilo dokončit. Zkuste to prosím znovu.')
       const refs = await linkRefs(fullText)
       if (refs) line({ type: 'refs', ...refs })
       sendLimits()
+      if (delegate && delegateTokens) line({ type: 'usage', delegates: [{ id: delegate.id, label: delegate.label, tokens: delegateTokens }] })
       line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id, ...(delegate ? { via: delegate.id } : {}) })
       if (!res.destroyed) res.end()
     } catch (err) {

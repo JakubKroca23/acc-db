@@ -11,7 +11,7 @@ import karelFull from './assets/kapitan-karel.png'
 
 type Role = 'user' | 'assistant'
 type Refs = { products?: Record<string, { id: string } & Record<string, unknown>>; categories?: string[] }
-type Msg = { role: Role; content: string; error?: boolean; model?: string; actions?: string[]; refs?: Refs }
+type Msg = { role: Role; content: string; error?: boolean; model?: string; actions?: string[]; refs?: Refs; usage?: string }
 type LimitBar = { limit: number; used: number; remaining: number; resetAt: number | null; source: 'groq' | 'local' } | null
 type ModelLimits = { rpd: LimitBar; tpm: LimitBar; rpm: LimitBar; tpd: LimitBar; blockedUntil: number | null; updatedAt: number | null }
 type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq' | 'gemini'; available: boolean; tools?: boolean; limits?: ModelLimits | null; description?: string }
@@ -37,6 +37,9 @@ const STATUS_REFRESH_MS = 15_000
 
 const nf = new Intl.NumberFormat('cs-CZ')
 const shortLabel = (label: string) => label.replace(/^(GroqCloud|Google|Lokální) – /, '')
+type Delegate = { id: string; label: string; tokens: number }
+/** „+ GPT-OSS 20B · 1,2k tok“ – approximate usage of the cloud helpers that did the tool work */
+const usageText = (d: Delegate[]) => d.map((x) => `+ ${x.label} · ${x.tokens >= 1000 ? `${(x.tokens / 1000).toFixed(1).replace('.', ',')}k` : x.tokens} tok`).join(' ')
 
 function fmtWait(ms: number) {
   const s = Math.max(0, Math.ceil(ms / 1000))
@@ -511,6 +514,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     const meta = el('div', 'chat-meta', m.model ? shortLabel(m.model) : '')
     meta.hidden = !m.model
     if (m.model) meta.title = `Odpověděl: ${m.model}`
+    if (m.model && m.usage) meta.append(el('span', 'chat-meta-usage', m.usage))
     col.append(b, status, chips, meta)
     if (m.role === 'assistant') row.append(avatar('chat-msg-avatar'))
     row.append(col)
@@ -828,7 +832,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
       let buf = ''
       const handleLine = (line: string) => {
         if (!line.trim()) return
-        let obj: { type?: string; message?: { content?: string }; error?: string; text?: string; model?: string; limits?: ModelLimits; retryAfter?: number; products?: Refs['products']; categories?: string[] } & Partial<ChatAction>
+        let obj: { type?: string; message?: { content?: string }; error?: string; text?: string; model?: string; limits?: ModelLimits; retryAfter?: number; products?: Refs['products']; categories?: string[]; delegates?: Delegate[] } & Partial<ChatAction>
         try {
           obj = JSON.parse(line)
         } catch {
@@ -846,6 +850,10 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         if (obj.type === 'status') return setStatus(obj.text || null)
         if (obj.type === 'action' && obj.name && obj.label) return handleAction(obj as ChatAction)
         if (obj.type === 'limits') return applyLimits(obj.model || modelAtSend, obj.limits)
+        if (obj.type === 'usage') {
+          if (Array.isArray(obj.delegates) && obj.delegates.length) answer.usage = usageText(obj.delegates)
+          return
+        }
         if (obj.type === 'refs') {
           answer.refs = { products: obj.products || {}, categories: Array.isArray(obj.categories) ? obj.categories : [] }
           return schedule()
@@ -882,6 +890,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
       if (answer.error && !answer.content.trim()) answer.content = GENERIC_ERROR
       if (answer.model && !answer.error) {
         view.meta.textContent = shortLabel(answer.model)
+        if (answer.usage) view.meta.append(el('span', 'chat-meta-usage', answer.usage))
         view.meta.title = `Odpověděl: ${answer.model}`
         view.meta.hidden = false
       }
