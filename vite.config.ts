@@ -18,8 +18,10 @@ function apiPlugin(env: Record<string, string>): Plugin {
     name: 'acc-db-api',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (req.url === '/' || req.url === '') {
-          res.writeHead(302, { Location: '/acc-db/' })
+        const u = req.url?.split('?')[0] || ''
+        if (u === '/acc-db' || u === '/' || u === '') {
+          const qs = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''
+          res.writeHead(302, { Location: `/acc-db/${qs}` })
           res.end()
           return
         }
@@ -35,8 +37,10 @@ function apiPlugin(env: Record<string, string>): Plugin {
     configurePreviewServer(server) {
       handler.onServerStart()
       server.middlewares.use((req, res, next) => {
-        if (req.url === '/' || req.url === '') {
-          res.writeHead(302, { Location: '/acc-db/' })
+        const u = req.url?.split('?')[0] || ''
+        if (u === '/acc-db' || u === '/' || u === '') {
+          const qs = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''
+          res.writeHead(302, { Location: `/acc-db/${qs}` })
           res.end()
           return
         }
@@ -68,11 +72,10 @@ function apiPlugin(env: Record<string, string>): Plugin {
   }
 }
 
-export default defineConfig(({ mode, command }) => {
+export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ''), ...process.env } as Record<string, string>
-  const base = env.VITE_BASE || (command === 'serve' ? '/' : '/acc-db/')
   return {
-    base,
+    base: env.VITE_BASE || '/acc-db/',
     plugins: [apiPlugin(env)],
     server: { port: 5173, host: true },
     preview: {
