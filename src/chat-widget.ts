@@ -414,8 +414,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   resetBtn.title = 'Nová konverzace (smaže dosavadní zprávy)'
   resetBtn.setAttribute('aria-label', 'Nová konverzace')
   // static icon markup (no user/model data) — „new chat“ pencil-in-square
-  resetBtn.innerHTML =
-    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 8.5-8.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>'
+  resetBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg><span>Nový</span>'
   const closeBtn = el('button', 'chat-icon-btn chat-close', '✕')
   closeBtn.type = 'button'
   closeBtn.title = 'Zavřít'

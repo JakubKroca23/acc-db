@@ -1790,7 +1790,7 @@ textarea:focus {
   display: inline-grid;
   place-items: center;
   border-radius: 50%;
-  background: #fff;
+  background: #bfe2ff; /* light brand blue behind the black mascot ink */
   overflow: hidden;
 }
 
@@ -1846,7 +1846,7 @@ textarea:focus {
   justify-content: space-between;
   gap: 8px;
   padding: 10px 10px 10px 14px;
-  background: var(--brand-blue-ink);
+  background: #00355e;
   color: #fff;
 }
 
@@ -2178,12 +2178,35 @@ textarea:focus {
 }
 
 .chat-close {
-  font-size: 15px;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.chat-close:hover {
+  background: #ef4444;
 }
 
 .chat-reset {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: var(--brand-blue);
+  color: #fff;
+  font-size: 13px;
+}
+
+.chat-reset:hover {
+  background: var(--brand-blue-hover);
 }
 
 .chat-log {
