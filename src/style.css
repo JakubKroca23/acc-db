@@ -2015,53 +2015,138 @@ textarea:focus {
   min-width: 0;
 }
 
-/* tiny gauge = the most constraining limit of a model */
-.mini-gauge {
-  display: block;
-  position: relative;
+/* donut gauges of the limits (remaining %) */
+.limit-ring {
+  display: inline-flex;
   flex: none;
-  width: 44px;
-  height: 5px;
-  border-radius: 999px;
-  background: #e5e7eb;
-  overflow: hidden;
+  border-radius: 50%;
+  cursor: pointer;
 }
 
-.mini-gauge.is-head {
-  background: rgba(255, 255, 255, 0.18);
+.limit-ring:focus-visible {
+  outline: 2px solid #818cf8;
+  outline-offset: 1px;
 }
 
-.mini-gauge.is-row {
-  width: 36px;
+.ring {
+  display: block;
+  transform: rotate(-90deg);
 }
 
-.mini-gauge-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  transition: width 300ms var(--ease-out);
+.ring circle {
+  fill: none;
+  stroke-width: 4;
 }
 
-.mini-gauge.is-green .mini-gauge-fill {
-  background: #22c55e;
+.ring-track {
+  stroke: #e5e7eb;
 }
 
-.mini-gauge.is-amber .mini-gauge-fill {
-  background: #f59e0b;
+.chat-head-gauge .ring-track {
+  stroke: rgba(255, 255, 255, 0.2);
 }
 
-.mini-gauge.is-red .mini-gauge-fill {
-  background: #ef4444;
+.ring-value {
+  stroke-linecap: round;
+  transition: stroke-dasharray 300ms var(--ease-out);
 }
 
-.mini-gauge.is-free {
-  background: transparent;
-  border: 1px dashed #a5b4fc;
+.ring.is-green .ring-value {
+  stroke: #22c55e;
 }
 
-.mini-gauge.is-empty {
-  background: repeating-linear-gradient(90deg, #d1d5db 0 4px, transparent 4px 7px);
+.ring.is-amber .ring-value {
+  stroke: #f59e0b;
 }
+
+.ring.is-red .ring-value {
+  stroke: #ef4444;
+}
+
+.ring.is-free .ring-track {
+  stroke: #a5b4fc;
+  stroke-dasharray: 3 2;
+}
+
+.ring-text {
+  transform: rotate(90deg);
+  transform-origin: 18px 18px;
+  text-anchor: middle;
+  dominant-baseline: central;
+  font-size: 12px;
+  font-weight: 700;
+  fill: currentColor;
+}
+
+.chat-head-gauge .ring-text {
+  fill: #fff;
+}
+
+.limit-pop {
+  position: fixed;
+  z-index: 1000;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  color: #111827;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  font-size: 12px;
+}
+
+.limit-pop[hidden] {
+  display: none;
+}
+
+.limit-pop-title {
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.limit-pop-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.limit-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.limit-pop-text {
+  display: grid;
+  line-height: 1.25;
+}
+
+.limit-pop-label {
+  font-weight: 600;
+}
+
+.limit-pop-num {
+  font-variant-numeric: tabular-nums;
+}
+
+.limit-pop-reset,
+.limit-pop-note,
+.limit-pop-free {
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.limit-pop-note {
+  margin-top: 8px;
+}
+
+.limit-pop-blocked {
+  margin-bottom: 8px;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
 
 .chat-head-actions {
   display: flex;

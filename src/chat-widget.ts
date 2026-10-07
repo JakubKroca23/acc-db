@@ -164,22 +164,140 @@ function limitSummary(m: ModelOption): { pct: number | null; tip: string } {
   return { pct, tip: lines.join('\n') }
 }
 
-/** tiny gauge: thin bar of the most constraining limit (green / amber / red) */
-function miniGauge(m: ModelOption, cls: string): HTMLElement {
-  const { pct, tip } = limitSummary(m)
-  const g = el('span', `mini-gauge ${cls}`)
-  g.title = tip
-  if (pct === null) {
-    g.classList.add(m.provider === 'ollama' ? 'is-free' : 'is-empty')
-    g.setAttribute('aria-label', m.provider === 'ollama' ? 'bez limitu' : 'limity zatím bez dat')
-    return g
+type LimitItem = { label: string; pct: number | null; remaining: number; limit: number; resetAt: number | null; local: boolean }
+
+/** every limit of a model as its own item (Groq: RPD, TPM, RPM, TPD; Gemini: local RPM, RPD, TPM) */
+function limitItems(m: ModelOption): LimitItem[] {
+  const out: LimitItem[] = []
+  for (const k of ['rpd', 'tpm', 'rpm', 'tpd'] as const) {
+    const b = m.limits?.[k]
+    if (!b || !b.limit) continue
+    out.push({ label: BAR_INFO[k].label, pct: Math.max(0, Math.min(100, (b.remaining / b.limit) * 100)), remaining: b.remaining, limit: b.limit, resetAt: b.resetAt, local: b.source === 'local' })
   }
-  g.classList.add(level(pct))
-  const fill = el('span', 'mini-gauge-fill')
-  fill.style.width = `${Math.max(4, pct)}%`
-  g.append(fill)
-  g.setAttribute('aria-label', `zbývá ${Math.round(pct)} % limitu`)
-  return g
+  return out
+}
+
+const SVG = 'http://www.w3.org/2000/svg'
+
+/** SVG donut with the remaining % in the centre (green / amber < 30 % / red < 10 %) */
+function ring(pct: number | null, size: number, free = false): SVGSVGElement {
+  const svg = document.createElementNS(SVG, 'svg')
+  svg.setAttribute('viewBox', '0 0 36 36')
+  svg.setAttribute('width', String(size))
+  svg.setAttribute('height', String(size))
+  svg.setAttribute('class', `ring ${free ? 'is-free' : pct === null ? 'is-empty' : level(pct)}`)
+  const circle = (cls: string) => {
+    const c = document.createElementNS(SVG, 'circle')
+    c.setAttribute('cx', '18')
+    c.setAttribute('cy', '18')
+    c.setAttribute('r', '15.9155') // circumference = 100
+    c.setAttribute('class', cls)
+    return c
+  }
+  svg.append(circle('ring-track'))
+  if (pct !== null && !free) {
+    const v = circle('ring-value')
+    v.setAttribute('stroke-dasharray', `${Math.max(1, pct)} 100`)
+    svg.append(v)
+  }
+  const t = document.createElementNS(SVG, 'text')
+  t.setAttribute('x', '18')
+  t.setAttribute('y', '18')
+  t.setAttribute('class', 'ring-text')
+  t.textContent = free ? '∞' : pct === null ? '–' : String(Math.round(pct))
+  svg.append(t)
+  return svg
+}
+
+// one shared popover with the detailed limits (hover on desktop, click/tap on mobile)
+let pop: HTMLElement | null = null
+let popHide = 0
+let popAnchor: HTMLElement | null = null
+let popModel: () => ModelOption | undefined = () => undefined
+
+function fillPop(m: ModelOption) {
+  if (!pop) return
+  const head = el('div', 'limit-pop-title', shortLabel(m.label))
+  if (m.provider === 'ollama') {
+    pop.replaceChildren(head, el('div', 'limit-pop-free', 'Na našem serveru – bez limitu.'))
+    return
+  }
+  const items = limitItems(m)
+  const blocked = m.limits?.blockedUntil && m.limits.blockedUntil > Date.now() ? el('div', 'limit-pop-blocked', `Limit vyčerpán – znovu za ${fmtWait(m.limits.blockedUntil - Date.now())}`) : null
+  const grid = el('div', 'limit-pop-grid')
+  for (const it of items) {
+    const cell = el('div', 'limit-pop-item')
+    const txt = el('div', 'limit-pop-text')
+    txt.append(
+      el('span', 'limit-pop-label', it.label + (it.local ? ' *' : '')),
+      el('span', 'limit-pop-num', `${nf.format(it.remaining)} / ${nf.format(it.limit)}`),
+      el('span', 'limit-pop-reset', it.resetAt ? `obnova za ${fmtWait(it.resetAt - Date.now())} (${clock(it.resetAt)})` : 'plný'),
+    )
+    cell.append(ring(it.pct, 30), txt)
+    grid.append(cell)
+  }
+  pop.replaceChildren(head, ...(blocked ? [blocked] : []), items.length ? grid : el('div', 'limit-pop-free', 'Zatím bez dat – ukáže se po prvním dotazu.'))
+  if (items.some((i) => i.local)) pop.append(el('div', 'limit-pop-note', '* místní počítadlo (odhad)'))
+}
+
+function showPop(anchor: HTMLElement, getModel: () => ModelOption | undefined) {
+  const m = getModel()
+  if (!m) return
+  if (!pop) {
+    pop = el('div', 'limit-pop')
+    pop.setAttribute('role', 'tooltip')
+    pop.addEventListener('mouseenter', () => clearTimeout(popHide))
+    pop.addEventListener('mouseleave', () => hidePop(150))
+    document.body.append(pop)
+    document.addEventListener('click', (e) => {
+      if (pop && !pop.hidden && !pop.contains(e.target as Node) && !(e.target as Element).closest?.('.limit-ring')) hidePop()
+    })
+  }
+  clearTimeout(popHide)
+  popAnchor = anchor
+  popModel = getModel
+  fillPop(m)
+  pop.hidden = false
+  const r = anchor.getBoundingClientRect()
+  const w = pop.offsetWidth
+  const h = pop.offsetHeight
+  pop.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w))}px`
+  pop.style.top = `${r.bottom + 6 + h > window.innerHeight ? Math.max(8, r.top - h - 6) : r.bottom + 6}px`
+}
+
+function hidePop(delay = 0) {
+  clearTimeout(popHide)
+  popHide = window.setTimeout(() => {
+    if (pop) pop.hidden = true
+    popAnchor = null
+  }, delay)
+}
+
+/** keeps an open popover in sync after a status refresh */
+function refreshPop() {
+  const m = popModel()
+  if (pop && !pop.hidden && m) fillPop(m)
+}
+
+/** ring of the tightest limit; hover / click shows the details */
+function limitRing(m: ModelOption, size: number, getModel: () => ModelOption | undefined): HTMLElement {
+  const { pct } = limitSummary(m)
+  const wrap = el('span', 'limit-ring')
+  wrap.tabIndex = 0
+  wrap.setAttribute('role', 'button')
+  wrap.setAttribute('aria-label', m.provider === 'ollama' ? 'bez limitu' : pct === null ? 'limity zatím bez dat' : `zbývá ${Math.round(pct)} % limitu – podrobnosti`)
+  wrap.append(ring(pct, size, m.provider === 'ollama'))
+  wrap.addEventListener('mouseenter', () => showPop(wrap, getModel))
+  wrap.addEventListener('mouseleave', () => hidePop(200))
+  wrap.addEventListener('focus', () => showPop(wrap, getModel))
+  wrap.addEventListener('blur', () => hidePop(200))
+  wrap.addEventListener('click', (e) => {
+    e.stopPropagation() // don't select the model row
+    e.preventDefault()
+    if (pop && !pop.hidden && popAnchor === wrap) hidePop()
+    else showPop(wrap, getModel)
+  })
+  return wrap
 }
 
 /** host.getContext: compact snapshot of the user's current screen, sent with every question;
@@ -421,7 +539,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     modelBtnText.textContent = m ? shortLabel(m.label) : 'Vyberte model'
     modelBtn.disabled = loading || models.length < 2
     headGauge.replaceChildren()
-    if (m) headGauge.append(miniGauge(m, 'is-head'))
+    if (m) headGauge.append(limitRing(m, 30, currentModel))
     // simple rows: name + one description line + tiny gauge on the right
     menu.replaceChildren(
       ...models.map((x) => {
@@ -433,11 +551,12 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         row.disabled = !x.available
         const text = el('span', 'chat-model-row-text')
         text.append(el('span', 'chat-model-name', shortLabel(x.label)), el('span', 'chat-model-desc', x.available ? x.description || '' : 'teď nedostupný'))
-        row.append(text, miniGauge(x, 'is-row'))
-        row.title = `${x.tools === false ? 'Jen odpovídá (bez hledání v katalogu a akcí).' : 'Umí hledat v katalogu a provádět akce.'}\n${limitSummary(x).tip}`
+        row.append(text, limitRing(x, 26, () => models.find((y) => y.id === x.id)))
+        row.title = x.tools === false ? 'Jen odpovídá (bez hledání v katalogu a akcí).' : 'Umí hledat v katalogu a provádět akce.'
         return row
       }),
     )
+    refreshPop()
   }
 
   function openMenu() {
