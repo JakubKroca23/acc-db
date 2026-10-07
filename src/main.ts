@@ -1402,4 +1402,4 @@ function chatContext(): Record<string, unknown> {
   return { Stránka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : 'Katalog' }
 }
 
-mountChatWidget(apiFetch, chatContext)
+mountChatWidget(apiFetch, { getContext: chatContext })

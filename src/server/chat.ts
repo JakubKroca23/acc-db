@@ -12,11 +12,14 @@
  *   OLLAMA_KEEP_ALIVE  optional per-request keep_alive (e.g. 30m, -1); default: Ollama's own setting
  *   OLLAMA_NUM_THREAD  optional CPU threads for generation (default: Ollama's choice = physical cores)
  *   GROQ_API_KEY    enables GroqCloud models (server-side only, never sent to the browser)
- *   GROQ_MODELS     comma separated Groq model ids, default openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b
- *                   (the first available one is the default in the chat panel)
- *   GROQ_TIMEOUT_MS max. duration of one Groq answer, default 60000
+ *   GROQ_MODELS     optional comma separated Groq model ids = exact list + order (default: every chat-capable
+ *                   model the key's /models returns, gpt-oss-120b first and default)
+ *   GROQ_LIMITS     optional JSON {model: {rpm, rpd, tpm, tpd}} overriding the known plan limits (free tier defaults)
+ *   GROQ_TIMEOUT_MS max. duration of one Groq answer, default 90000
+ *   CHAT_STATE_FILE optional JSON file for the Groq rate-limit counters (survives restarts)
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createGroqLimits, type ModelLimits } from './groq-limits.ts'
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
@@ -160,18 +163,37 @@ export function validateMessages(body: unknown): ChatMessage[] {
   return msgs
 }
 
-export type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq'; model: string; available: boolean }
+export type ModelOption = {
+  id: string
+  label: string
+  provider: 'ollama' | 'groq'
+  model: string
+  available: boolean
+  limits?: ModelLimits | null
+}
+type ModelChoice = Omit<ModelOption, 'available' | 'limits'>
 
-const GROQ_DEFAULT_MODELS = 'openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b'
+/** Preferred order when GROQ_MODELS is not set; any other chat model from /models follows alphabetically. */
+const GROQ_PREFERRED = ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile', 'minimaxai/minimax-m2.7', 'llama-3.1-8b-instant']
+const GROQ_FALLBACK = ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b']
+/**
+ * Not offered: speech (whisper STT, orpheus TTS), prompt-guard / safeguard classifiers (gpt-oss-safeguard-20b
+ * answers like a chat model, but its 2K tokens/min limit is smaller than one request with our prompt + tools),
+ * allam-2-7b (Arabic model: broken Czech, no tool calling).
+ */
+const GROQ_EXCLUDE = /whisper|orpheus|tts|guard|allam|distil|playai/i
 const GROQ_LABELS: Record<string, string> = {
-  'openai/gpt-oss-120b': 'GroqCloud – GPT-OSS 120B',
-  'openai/gpt-oss-20b': 'GroqCloud – GPT-OSS 20B (rychlý)',
-  'qwen/qwen3.8-27b': 'GroqCloud – Qwen 3.8 27B',
+  'openai/gpt-oss-120b': 'GPT-OSS 120B',
+  'openai/gpt-oss-20b': 'GPT-OSS 20B (rychlý)',
+  'qwen/qwen3.8-27b': 'Qwen 3.8 27B',
+  'llama-3.3-70b-versatile': 'Llama 3.3 70B',
+  'llama-3.1-8b-instant': 'Llama 3.1 8B (rychlý)',
+  'minimaxai/minimax-m2.7': 'MiniMax M2.7',
 }
 const GROQ_LIST_TTL_MS = 10 * 60_000
 
 function groqLabel(model: string) {
-  return GROQ_LABELS[model] || `GroqCloud – ${model.split('/').pop()}`
+  return `GroqCloud – ${GROQ_LABELS[model] || model.split('/').pop()}`
 }
 
 function ollamaLabel(model: string) {
@@ -205,16 +227,18 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   // ── GroqCloud (OpenAI-compatible API); the key never leaves the server ──
   const groqKey = (env.GROQ_API_KEY || '').trim()
   const groqUrl = (env.GROQ_URL || 'https://api.groq.com/openai/v1').trim().replace(/\/+$/, '')
-  const groqModels = (env.GROQ_MODELS || GROQ_DEFAULT_MODELS)
+  const groqOverride = (env.GROQ_MODELS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
-  const groqTimeout = Math.max(5_000, Number(env.GROQ_TIMEOUT_MS) || 60_000)
-  let groqListed: { at: number; ids: Set<string> } | null = null
+  const groqTimeout = Math.max(5_000, Number(env.GROQ_TIMEOUT_MS) || 90_000)
+  let groqListed: { at: number; ids: string[] } | null = null
+  const limits = createGroqLimits(env)
+  const lastProbe = new Map<string, number>()
 
-  /** Which configured Groq models this key can really use (cached 10 min; unknown → assume yes). */
-  async function groqAvailableIds(): Promise<Set<string> | null> {
-    if (!groqKey) return new Set()
+  /** Chat-capable models this key can use (cached 10 min). null = unknown (network). */
+  async function groqDiscover(): Promise<string[] | null> {
+    if (!groqKey) return []
     if (groqListed && Date.now() - groqListed.at < GROQ_LIST_TTL_MS) return groqListed.ids
     try {
       const r = await fetch(`${groqUrl}/models`, {
@@ -223,25 +247,39 @@ export function createChatHandler(env: Record<string, string | undefined>) {
       })
       if (r.status === 401 || r.status === 403) {
         console.warn(`[acc-db chat] Groq rejected the API key (HTTP ${r.status})`)
-        groqListed = { at: Date.now() - GROQ_LIST_TTL_MS + 60_000, ids: new Set() } // re-check in 1 min
+        groqListed = { at: Date.now() - GROQ_LIST_TTL_MS + 60_000, ids: [] } // re-check in 1 min
         return groqListed.ids
       }
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const data = (await r.json()) as { data?: { id: string; active?: boolean }[] }
-      groqListed = { at: Date.now(), ids: new Set((data.data || []).filter((m) => m.active !== false).map((m) => m.id)) }
-      return groqListed.ids
+      const body = (await r.json()) as { data?: { id: string; active?: boolean; context_window?: number }[] }
+      const ids = (body.data || [])
+        .filter((m) => m.active !== false && !GROQ_EXCLUDE.test(m.id) && (m.context_window ?? 131072) >= 8192)
+        .map((m) => m.id)
+      groqListed = { at: Date.now(), ids }
+      return ids
     } catch (err) {
       console.warn('[acc-db chat] Groq model list failed:', errText(err))
-      return null
+      return groqListed?.ids ?? null
     }
+  }
+
+  /** Ordered Groq model ids to offer + which of them are usable now. */
+  async function groqModels(): Promise<{ ids: string[]; usable: Set<string> }> {
+    if (!groqKey) return { ids: [], usable: new Set() }
+    const found = await groqDiscover()
+    if (groqOverride.length) return { ids: groqOverride, usable: new Set(found === null ? groqOverride : groqOverride.filter((m) => found.includes(m))) }
+    if (found === null) return { ids: GROQ_FALLBACK, usable: new Set(GROQ_FALLBACK) }
+    const rank = (m: string) => (GROQ_PREFERRED.includes(m) ? GROQ_PREFERRED.indexOf(m) : 100)
+    const ids = [...found].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    return { ids, usable: new Set(ids) }
   }
 
   async function ollamaAvailable(): Promise<boolean> {
     try {
       const r = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) })
       if (!r.ok) return false
-      const data = (await r.json()) as { models?: { name?: string; model?: string }[] }
-      const names = (data.models || []).map((m) => m.name || m.model || '')
+      const body = (await r.json()) as { models?: { name?: string; model?: string }[] }
+      const names = (body.models || []).map((m) => m.name || m.model || '')
       return names.includes(model) || names.includes(model.includes(':') ? model : `${model}:latest`)
     } catch {
       return false
@@ -249,25 +287,54 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   }
 
   /** Whitelist of selectable models (Groq first when a key is configured). */
-  function modelList(): Omit<ModelOption, 'available'>[] {
+  async function modelList(): Promise<(ModelChoice & { usable: boolean })[]> {
+    const g = await groqModels()
     return [
-      ...(groqKey ? groqModels.map((m) => ({ id: `groq:${m}`, label: groqLabel(m), provider: 'groq' as const, model: m })) : []),
-      { id: ollamaId, label: ollamaLabel(model), provider: 'ollama' as const, model },
+      ...g.ids.map((m) => ({ id: `groq:${m}`, label: groqLabel(m), provider: 'groq' as const, model: m, usable: g.usable.has(m) })),
+      { id: ollamaId, label: ollamaLabel(model), provider: 'ollama' as const, model, usable: true },
     ]
   }
 
-  /** GET /api/chat/status — selectable models with availability + the default. */
-  async function status(res: ServerResponse) {
-    const [ollamaOk, groqIds] = await Promise.all([ollamaAvailable(), groqAvailableIds()])
-    const models: ModelOption[] = modelList().map((m) => ({
+  /** Cheap request (max 1 token) just to read the rate-limit headers of a model we have no data for yet. */
+  async function probe(m: string) {
+    lastProbe.set(m, Date.now())
+    try {
+      limits.noteRequest(m)
+      const r = await fetch(`${groqUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({ model: m, max_completion_tokens: 1, messages: [{ role: 'user', content: 'ok' }] }),
+        signal: AbortSignal.timeout(4_000),
+      })
+      limits.noteHeaders(m, r.headers)
+      if (r.status === 429) limits.note429(m, Number(r.headers.get('retry-after')) || null)
+      const body = (await r.json().catch(() => null)) as { usage?: { total_tokens?: number } } | null
+      if (body?.usage?.total_tokens) limits.noteUsage(m, body.usage.total_tokens)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** GET /api/chat/status[?probe=1] — selectable models with availability, rate limits + the default. */
+  async function status(req: IncomingMessage, res: ServerResponse) {
+    const wantProbe = /[?&]probe=1\b/.test(req.url || '')
+    const [ollamaOk, list] = await Promise.all([ollamaAvailable(), modelList()])
+    if (wantProbe) {
+      const todo = list.filter((m) => m.provider === 'groq' && m.usable && !limits.hasData(m.model) && Date.now() - (lastProbe.get(m.model) || 0) > 10 * 60_000)
+      if (todo.length) await Promise.all(todo.slice(0, 6).map((m) => probe(m.model)))
+    }
+    const models: ModelOption[] = list.map(({ usable, ...m }) => ({
       ...m,
-      available: m.provider === 'ollama' ? ollamaOk : groqIds === null || groqIds.has(m.model),
+      available: m.provider === 'ollama' ? ollamaOk : usable,
+      limits: m.provider === 'groq' ? limits.snapshot(m.model) : null,
     }))
-    const def = models.find((m) => m.available) || models[0]
+    const preferred = models.find((m) => m.id === 'groq:openai/gpt-oss-120b' && m.available)
+    const def = preferred || models.find((m) => m.available) || models[0]
     sendJson(res, 200, {
       models,
       default: def.id,
       available: models.some((m) => m.available),
+      now: Date.now(),
       // legacy fields (local model)
       model,
       error: models.some((m) => m.available) ? null : MSG_UNAVAILABLE,
@@ -289,7 +356,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   async function chat(req: IncomingMessage, res: ServerResponse) {
     let messages: ChatMessage[]
     let context: string | null
-    let choice: Omit<ModelOption, 'available'>
+    let choice: ModelChoice
     try {
       const raw = await readBody(req, MAX_BODY_BYTES)
       let body: unknown
@@ -300,14 +367,14 @@ export function createChatHandler(env: Record<string, string | undefined>) {
       }
       messages = validateMessages(body)
       context = validateContext(body)
-      const list = modelList()
+      const list = await modelList()
       const wanted = (body as { model?: unknown }).model
       if (wanted !== undefined && wanted !== null && wanted !== '') {
         const found = typeof wanted === 'string' ? list.find((m) => m.id === wanted) : undefined
         if (!found) throw new HttpError(400, 'Vybraný model není k dispozici. Vyberte prosím jiný.')
         choice = found
       } else {
-        choice = list[0]
+        choice = list.find((m) => m.usable) || list[0]
       }
     } catch (err) {
       if (err instanceof HttpError) return sendJson(res, err.status, { error: err.message })
@@ -315,6 +382,21 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     }
 
     const isGroq = choice.provider === 'groq'
+    if (isGroq) {
+      let wait = limits.blockedFor(choice.model)
+      if (wait > 0 && wait <= 5) {
+        await new Promise((r) => setTimeout(r, wait * 1000 + 200)) // tokens/min window almost refilled
+        wait = 0
+      }
+      if (wait > 0) {
+        res.setHeader('Retry-After', String(wait))
+        return sendJson(res, 429, {
+          error: `GroqCloud: model ${GROQ_LABELS[choice.model] || choice.model} má vyčerpaný limit (znovu za ${wait} s). Vyberte prosím jiný model.`,
+          retryAfter: wait,
+          limits: limits.snapshot(choice.model),
+        })
+      }
+    }
     const ctrl = new AbortController()
     let timedOut = false
     const total = setTimeout(
@@ -360,23 +442,36 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     }
     const brokenMsg = () => (timedOut ? 'Odpověď trvala příliš dlouho a byla přerušena.' : 'Spojení s Kapitánem Karlem bylo přerušeno.')
 
+    const groqFetch = async () => {
+      limits.noteRequest(choice.model)
+      const r = await fetch(`${groqUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({
+          model: choice.model,
+          stream: true,
+          stream_options: { include_usage: true }, // → usage in the last chunk (local tokens/day counter)
+          max_completion_tokens: 700, // Groq counts this into the tokens/min estimate of the request
+          temperature: 0.4,
+          ...groqExtras(choice.model),
+          messages: promptMessages(messages, context),
+        }),
+        signal: ctrl.signal,
+      })
+      limits.noteHeaders(choice.model, r.headers)
+      return r
+    }
+    /** retry-after header (s) or „try again in 510ms / 1.5s“ in the 429 message */
+    const retryAfterOf = (r: Response, text: string) => {
+      const m = text.match(/try again in ([\d.]+)(ms|s)/i)
+      return Math.ceil(Number(r.headers.get('retry-after'))) || (m ? Math.ceil(Number(m[1]) / (m[2] === 'ms' ? 1000 : 1)) : null)
+    }
+
     try {
       let upstream: Response
       try {
         upstream = isGroq
-          ? await fetch(`${groqUrl}/chat/completions`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-              body: JSON.stringify({
-                model: choice.model,
-                stream: true,
-                max_completion_tokens: 1024,
-                temperature: 0.4,
-                ...groqExtras(choice.model),
-                messages: promptMessages(messages, context),
-              }),
-              signal: ctrl.signal,
-            })
+          ? await groqFetch()
           : await fetch(`${baseUrl}/api/chat`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -392,6 +487,16 @@ export function createChatHandler(env: Record<string, string | undefined>) {
         })
       }
 
+      // a short tokens/min wait (≤ 12 s) is waited out instead of failing (max 2×)
+      for (let attempt = 0; isGroq && upstream.status === 429 && attempt < 2; attempt++) {
+        const ra = retryAfterOf(upstream, await upstream.clone().text().catch(() => ''))
+        if (!ra || ra > 12) break
+        await upstream.body?.cancel().catch(() => {})
+        await new Promise((r) => setTimeout(r, ra * 1000 + 300))
+        if (res.destroyed || ctrl.signal.aborted) return
+        upstream = await groqFetch().catch(() => upstream)
+      }
+
       if (!upstream.ok || !upstream.body) {
         const text = await upstream.text().catch(() => '')
         clearFirst()
@@ -400,10 +505,13 @@ export function createChatHandler(env: Record<string, string | undefined>) {
           const st = upstream.status
           if (st === 401 || st === 403) return sendJson(res, 502, { error: 'GroqCloud odmítl API klíč (neplatný nebo zablokovaný). Přepněte prosím na lokální model.' })
           if (st === 429) {
-            const ra = upstream.headers.get('retry-after')
-            if (ra) res.setHeader('Retry-After', ra)
+            const ra = retryAfterOf(upstream, text)
+            limits.note429(choice.model, ra)
+            if (ra) res.setHeader('Retry-After', String(ra))
             return sendJson(res, 429, {
-              error: `GroqCloud: vyčerpaný limit požadavků nebo tokenů${ra ? ` (zkuste to znovu za ${Math.ceil(Number(ra)) || ra} s)` : ''}. Zkuste to za chvíli nebo přepněte na lokální model.`,
+              error: `GroqCloud: model ${GROQ_LABELS[choice.model] || choice.model} vyčerpal limit požadavků nebo tokenů${ra ? ` (znovu za ${ra} s)` : ''}. Zkuste to za chvíli nebo vyberte jiný model.`,
+              ...(ra ? { retryAfter: ra } : {}),
+              limits: limits.snapshot(choice.model),
             })
           }
           if (st === 404) return sendJson(res, 503, { error: `Model ${choice.model} teď v GroqCloud není dostupný. Vyberte prosím jiný.` })
@@ -441,7 +549,8 @@ export function createChatHandler(env: Record<string, string | undefined>) {
               finished = true
               return
             }
-            let o: { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string } }
+            type Usage = { total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
+            let o: { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string }; usage?: Usage; x_groq?: { usage?: Usage } }
             try {
               o = JSON.parse(data)
             } catch {
@@ -453,6 +562,8 @@ export function createChatHandler(env: Record<string, string | undefined>) {
               finished = true
               return
             }
+            const usage = o.usage || o.x_groq?.usage
+            if (usage?.total_tokens) limits.noteUsage(choice.model, usage.total_tokens, usage.prompt_tokens_details?.cached_tokens || 0)
             const c = o.choices?.[0]?.delta?.content
             if (c) line({ message: { role: 'assistant', content: c }, done: false })
           }
@@ -468,6 +579,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
             if (finished) break
           }
           if (buf) handle(buf)
+          line({ type: 'limits', model: choice.id, limits: limits.snapshot(choice.model) })
           line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id })
         }
       } catch {
@@ -517,6 +629,6 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     chat,
     status,
     warmup,
-    config: { baseUrl, model, numCtx, numThread, keepAlive, groq: groqKey ? { url: groqUrl, models: groqModels } : null },
+    config: { baseUrl, model, numCtx, numThread, keepAlive, groq: groqKey ? { url: groqUrl, models: groqOverride.length ? groqOverride : 'auto' } : null },
   }
 }

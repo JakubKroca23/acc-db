@@ -426,7 +426,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       }
 
       if (method === 'GET' && pathOnly === '/api/chat/status') {
-        await assistant.status(res)
+        await assistant.status(req, res)
         return
       }
 

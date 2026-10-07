@@ -24,8 +24,12 @@ services:
       - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
       # GroqCloud: GROQ_API_KEY přichází jen z .env na serveru (env_file výše) — nikdy do gitu ani do frontendu.
-      # První dostupný model ze seznamu je výchozí v panelu Kapitána Karla.
-      - GROQ_MODELS=${GROQ_MODELS:-openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b}
+      # GROQ_MODELS prázdné = automaticky všechny chatovací modely klíče (výchozí gpt-oss-120b); jinak přesný seznam/pořadí.
+      - GROQ_MODELS=${GROQ_MODELS:-}
+      # počítadla limitů GroqCloud přežijí restart / redeploy
+      - CHAT_STATE_FILE=/app/state/groq-rate.json
+    volumes:
+      - acc-db-state:/app/state
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.acc-db.rule=Host(`zakazky.contsystem.cz`) && PathPrefix(`/acc-db`)"
@@ -39,6 +43,9 @@ services:
     networks:
       - appwrite
       - ollama
+
+volumes:
+  acc-db-state:
 
 networks:
   appwrite:

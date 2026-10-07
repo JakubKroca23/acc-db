@@ -1879,11 +1879,11 @@ textarea:focus {
   flex: 1;
 }
 
-/* model switcher — sits under the name, looks like a subtitle with a chevron */
+/* model switcher — sits under the name, looks like a subtitle with a chevron; opens .chat-model-menu */
 .chat-model {
   justify-self: start;
-  appearance: none;
-  -webkit-appearance: none;
+  display: inline-flex;
+  align-items: center;
   max-width: 100%;
   min-width: 0;
   margin: 1px 0 0 -4px;
@@ -1892,16 +1892,21 @@ textarea:focus {
   border-radius: var(--radius);
   background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23c7d2fe' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 5px center;
   color: var(--quote-hl-ink);
+  font: inherit;
   font-size: 11.5px;
   line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  overflow: hidden;
   cursor: pointer;
 }
 
+.chat-model-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chat-model:hover:not(:disabled),
-.chat-model:focus-visible {
+.chat-model:focus-visible,
+.chat-model[aria-expanded='true'] {
   border-color: rgba(199, 210, 254, 0.35);
   background-color: rgba(255, 255, 255, 0.06);
 }
@@ -1918,9 +1923,190 @@ textarea:focus {
   padding-right: 4px;
 }
 
-.chat-model option {
+.chat-panel {
+  position: relative;
+}
+
+/* compact limit bars of the selected model, right under the dark header */
+.chat-head-limits {
+  padding: 5px 12px 6px;
+  background: #f4f4f6;
+  border-bottom: 1px solid var(--border);
+}
+
+.chat-head-limits[hidden] {
+  display: none;
+}
+
+.chat-model-menu {
+  position: absolute;
+  z-index: 3;
+  top: 58px;
+  left: 8px;
+  right: 8px;
+  max-height: calc(100% - 70px);
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg, 10px);
+  box-shadow: var(--shadow-pop);
+  animation: chat-in 140ms var(--ease-out);
+}
+
+.chat-model-menu[hidden] {
+  display: none;
+}
+
+.chat-model-row {
+  display: block;
+  width: 100%;
+  padding: 8px 10px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--foreground);
-  background: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-model-row + .chat-model-row {
+  margin-top: 2px;
+}
+
+.chat-model-row:hover:not(:disabled),
+.chat-model-row:focus-visible {
+  background: var(--muted);
+  outline: none;
+  border-color: var(--border);
+}
+
+.chat-model-row.is-selected {
+  border-color: var(--chat-accent);
+  background: rgba(79, 70, 229, 0.06);
+}
+
+.chat-model-row:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.chat-model-row-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.chat-model-name {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.chat-model-provider,
+.chat-model-off {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 17px;
+}
+
+.chat-model-provider.is-groq {
+  background: #fff1e6;
+  color: #9a3412;
+}
+
+.chat-model-provider.is-ollama {
+  background: #eef2ff;
+  color: #3730a3;
+}
+
+.chat-model-off {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* limit bars: name · track · numbers (remaining share; green → amber < 30 % → red < 10 %) */
+.limits {
+  display: grid;
+  gap: 3px;
+}
+
+.limits.is-compact {
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.limit {
+  display: grid;
+  grid-template-columns: 92px 1fr 104px;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.limit.is-compact {
+  grid-template-columns: auto 1fr auto;
+  gap: 5px;
+  font-size: 10.5px;
+}
+
+.limit-track {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.limit-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: #9ca3af;
+  transition: width 300ms var(--ease-out);
+}
+
+.limit.is-green .limit-fill {
+  background: #16a34a;
+}
+
+.limit.is-amber .limit-fill {
+  background: #f59e0b;
+}
+
+.limit.is-red .limit-fill {
+  background: #dc2626;
+}
+
+.limit.is-red .limit-num {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.limit-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.limit.is-empty .limit-num {
+  font-style: italic;
+}
+
+.limits-free {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+
+.limits-blocked {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b45309;
 }
 
 .chat-head-actions {
@@ -2013,8 +2199,21 @@ textarea:focus {
   justify-content: flex-end;
 }
 
+.chat-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 84%;
+  min-width: 0;
+}
+
+.from-user .chat-col {
+  align-items: flex-end;
+}
+
 .chat-bubble {
-  max-width: 82%;
+  max-width: 100%;
   padding: 8px 11px;
   border-radius: 12px;
   font-size: 13.5px;
@@ -2055,6 +2254,53 @@ textarea:focus {
   50% {
     opacity: 0.3;
   }
+}
+
+.chat-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.chat-status::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border: 2px solid #c7d2fe;
+  border-top-color: var(--chat-accent);
+  border-radius: 50%;
+  animation: chat-spin 0.8s linear infinite;
+}
+
+.chat-status[hidden],
+.chat-meta[hidden] {
+  display: none;
+}
+
+@keyframes chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.chat-meta {
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+}
+
+.chat-notice-btn {
+  margin-left: 8px;
+  padding: 2px 9px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .chat-notice {
@@ -2151,6 +2397,9 @@ textarea:focus {
   }
   .chat-input {
     font-size: 16px; /* no iOS zoom on focus */
+  }
+  .limit {
+    grid-template-columns: 84px 1fr 84px;
   }
   /* keep the toast clear of the floating button */
   .toast {
