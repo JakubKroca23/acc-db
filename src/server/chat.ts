@@ -9,6 +9,8 @@
  *   OLLAMA_TIMEOUT_MS  max. duration of one answer, default 150000
  *   OLLAMA_NUM_CTX  optional context window in tokens (default: Ollama's own; changing it reloads the model)
  *   OLLAMA_WARMUP=off  disable pre-evaluating the system prompt at server start
+ *   OLLAMA_KEEP_ALIVE  optional per-request keep_alive (e.g. 30m, -1); default: Ollama's own setting
+ *   OLLAMA_NUM_THREAD  optional CPU threads for generation (default: Ollama's choice = physical cores)
  *   GROQ_API_KEY    enables GroqCloud models (server-side only, never sent to the browser)
  *   GROQ_MODELS     comma separated Groq model ids, default openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b
  *                   (the first available one is the default in the chat panel)
@@ -27,22 +29,19 @@ const STATUS_TIMEOUT_MS = 3_000
 
 export const MSG_UNAVAILABLE = 'Kapitán Karel zatím není dostupný (Ollama na serveru neběží).'
 
-/** Base = the user's own sentence; the rest describes the app so the model can guide users around it. */
+/** Base = the user's own sentence; the rest describes the app so the model can guide users around it.
+ *  Kept compact: the local model evaluates the prompt on the VPS CPU (and Groq's free tier counts tokens/min). */
 export const SYSTEM_PROMPT = [
   'Jsi interní asistent v naší webové aplikaci. Pomáhej uživatelům s orientací v systému a odpovídej stručně česky.',
+  'Jsi Kapitán Karel (maskot: pirátský robot), AI asistent aplikace „Katalog příslušenství“ firmy Contsystem (nástavby na nákladní vozidla). Když se zeptají, kdo jsi, představ se. Nehraj piráta. Uživateli vždy vykej (Vy, najdete, klikněte), nikdy netykej.',
   '',
-  'Jmenuješ se Kapitán Karel (maskot: pirátský robot) a jsi AI asistent aplikace „Katalog příslušenství“ firmy Contsystem, která vyrábí nástavby na nákladní vozidla (např. hákové nosiče kontejnerů). Když se uživatel zeptá, kdo jsi, představ se jako Kapitán Karel, AI asistent katalogu. Nepiš pirátským slangem a nehraj roli piráta; nanejvýš výjimečně lehký náznak v pozdravu. Uživateli vykej.',
+  'Aplikace: příslušenství k nákladním vozidlům od dodavatelů ALSAP (červený štítek), Trans-Technik (modrý) a Hydrotruck (zelený); orientační ceny bez DPH a s DPH (21 %).',
+  '- Hlavička: filtr dodavatele, hledání „Hledat v katalogu…“ (název, rozměr, kód), tlačítko „Cenová nabídka“ s odznakem ceny bez DPH.',
+  '- Levé menu kategorií (na mobilu pruh nahoře): „Vše“ = celý katalog; Podvozek: Blatníky, Zástěrky do blatníků, Držáky blatníků, Boční zábrany, Box na nářadí, Držáky boxů, Držák rezervy, Hasicí přístroj / bedna, Držáky hasicích beden, Maják, Nádoba na vodu, Držáky kanystrů, Uživatelská zásuvka; Všechny nástavby: Čerpadlo, Hydraulický olej, Kamery, Olejová nádrž, Pracovní světla; Hákový nosič kontejneru: Navařovací oko; Ostatní: Boxy / klece na podkládací desky, Podložky pod podpěry, Vázací prostředky. Kategorie s položkami v nabídce mají odznak s počtem. Dole „Aktualizovat katalog“ (stáhne nové ceny, trvá několik minut).',
+  '- Produkty jsou seřazené podle ceny (po 60, „Zobrazit další“), nad nimi „Související příslušenství“. Karta produktu: dodavatel, kód, název, rozměry, cena s/bez DPH, „Historie cen“, „Detail ↗“ (web dodavatele), „Přidat do nabídky“ nebo počítadlo − +.',
+  '- Cenová nabídka (#/nabidka): položky podle dodavatelů, množství, odhad dopravy, součty bez i s DPH, „Poznámka k nabídce“, „Kopírovat“, „CSV“, „Tisk / PDF“, „Vymazat nabídku“, „← Zpět do katalogu“ (Esc). Ukládá se v prohlížeči.',
   '',
-  'Popis aplikace:',
-  '- Katalog obsahuje příslušenství k nákladním vozidlům a nástavbám od tří dodavatelů: ALSAP (červený štítek), Trans-Technik (modrý štítek) a Hydrotruck (zelený štítek). Ceny jsou orientační z veřejných katalogů dodavatelů. „Bez DPH“ je cena bez daně, „s DPH“ včetně 21 % DPH.',
-  '- Hlavička (tmavý pruh nahoře): název „Katalog příslušenství“, výběr dodavatele („Všichni dodavatelé“, ALSAP, Trans-Technik, Hydrotruck), hned za ním vyhledávací pole „Hledat v katalogu…“ (hledá v názvu, dodavateli, rozměrech a kódu produktu), jméno přihlášeného uživatele (odkaz zpět do Contsystem Manageru) a tlačítko „Cenová nabídka“.',
-  '- Levé menu kategorií (na mobilu vodorovný pruh pod hlavičkou). Nahoře „Vše“ = celý katalog. Dále skupiny: Podvozek (Blatníky, Zástěrky do blatníků, Držáky blatníků, Boční zábrany, Box na nářadí, Držáky boxů, Držák rezervy, Hasicí přístroj / bedna, Držáky hasicích beden, Maják, Nádoba na vodu, Držáky kanystrů, Uživatelská zásuvka), Všechny nástavby (Čerpadlo, Hydraulický olej, Kamery, Olejová nádrž, Pracovní světla), Hákový nosič kontejneru (Navařovací oko), Ostatní (Boxy / klece na podkládací desky, Podložky pod podpěry, Vázací prostředky). Kategorie, ze kterých už je něco v nabídce, mají indigový odznak s počtem položek.',
-  '- Dole v levém menu je tlačítko „Aktualizovat katalog“ (stáhne aktuální produkty a ceny od dodavatelů, trvá několik minut) a stav katalogu (počet produktů, datum aktualizace).',
-  '- Seznam produktů: nadpis kategorie, počet položek a legenda dodavatelů. Produkty jsou seřazené podle ceny a zobrazují se po 60 („Zobrazit další“). Nad seznamem bývá pruh „Související příslušenství“ s odkazy na příbuzné kategorie (např. k blatníkům zástěrky a držáky).',
-  '- Karta produktu (detail produktu): obrázek, štítek dodavatele, kód, název, rozměry, cena s DPH (tučně) a bez DPH za jednotku (ks nebo L), odkaz „Historie cen“ (rozbalí změny ceny v čase), odkaz „Detail ↗“ (otevře produkt na webu dodavatele) a tlačítko „Přidat do nabídky“. Když už produkt v nabídce je, je místo tlačítka počítadlo − / + pro množství.',
-  '- Tlačítko „Cenová nabídka“ v hlavičce má odznak s celkovou cenou bez DPH a otevře stránku #/nabidka: položky seskupené podle dodavatele, cena za jednotku a za řádek bez i s DPH, změna množství, odebrání položky, odhad dopravy pro každého dodavatele, součty (Zboží celkem, Doprava celkem, Celkem – bez i s DPH), pole „Poznámka k nabídce“ a tlačítka „Kopírovat“ (text do schránky), „CSV“ (stáhne tabulku), „Tisk / PDF“ (vytisknout nebo uložit jako PDF), „Vymazat nabídku“ a „← Zpět do katalogu“ (nebo klávesa Esc). Nabídka se ukládá v prohlížeči uživatele.',
-  '',
-  'Pravidla: Nemáš přístup k databázi produktů. U dotazu můžeš dostat údaje „Aktuální obrazovka uživatele“ (stránka, kategorie, filtr, produkty na obrazovce, otevřený detail produktu, obsah cenové nabídky se součty). O konkrétních produktech, cenách a nabídce mluv jen podle nich. Nevymýšlej si produkty, ceny ani kódy; když údaj nemáš, řekni, že ho nevíš, a poraď, kde ho v katalogu najde (kategorie, vyhledávání, filtr dodavatele). Odpovídej krátce, nejvýše pár vět nebo stručný seznam. Piš prostý text bez Markdownu: žádné tabulky, nadpisy ani hvězdičky; seznamy jen s pomlčkou nebo číslem.',
+  'Pravidla: Nemáš přístup k databázi produktů. U dotazu můžeš dostat „Aktuální obrazovka uživatele“ (co uživatel právě vidí: stránka, kategorie, filtr, produkty, nabídka se součty); o produktech, cenách a nabídce mluv jen podle ní. Nic si nevymýšlej; co nevíš, přiznej a poraď, kde to v katalogu najde. Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou).',
 ].join('\n')
 
 const CONTEXT_MAX_BYTES = 8 * 1024
@@ -195,7 +194,12 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   const model = (env.OLLAMA_MODEL || 'qwen2.5:3b').trim()
   const totalTimeout = Math.max(5_000, Number(env.OLLAMA_TIMEOUT_MS) || 150_000)
   const numCtx = Number(env.OLLAMA_NUM_CTX) > 0 ? Math.max(2048, Math.min(32768, Number(env.OLLAMA_NUM_CTX))) : null
-  const options = numCtx ? { num_ctx: numCtx } : undefined
+  const numThread = Number(env.OLLAMA_NUM_THREAD) > 0 ? Math.min(64, Math.floor(Number(env.OLLAMA_NUM_THREAD))) : null
+  const options = numCtx || numThread ? { ...(numCtx ? { num_ctx: numCtx } : {}), ...(numThread ? { num_thread: numThread } : {}) } : undefined
+  // optional per-request keep_alive (the VPS Ollama container already runs with OLLAMA_KEEP_ALIVE=-1 = forever,
+  // which a per-request value would override — so only send it when configured)
+  const keepAlive = (env.OLLAMA_KEEP_ALIVE || '').trim()
+  const keep = keepAlive ? { keep_alive: /^-?\d+$/.test(keepAlive) ? Number(keepAlive) : keepAlive } : {}
   const ollamaId = `ollama:${model}`
 
   // ── GroqCloud (OpenAI-compatible API); the key never leaves the server ──
@@ -339,11 +343,16 @@ export function createChatHandler(env: Record<string, string | undefined>) {
 
     const startStream = () => {
       res.statusCode = 200
+      // unbuffered streaming: no proxy buffering / transformation (compression), each line flushed at once.
+      // (vite preview's compression middleware runs after this handler, so it never wraps the stream;
+      // the Traefik router for acc-db has no compress middleware.)
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
-      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('Cache-Control', 'no-cache, no-store, no-transform')
       res.setHeader('X-Accel-Buffering', 'no')
+      if (req.httpVersionMajor < 2) res.setHeader('Connection', 'keep-alive')
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('X-Chat-Model', choice.id)
+      res.socket?.setNoDelay(true)
       res.flushHeaders()
     }
     const line = (o: unknown) => {
@@ -371,7 +380,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
           : await fetch(`${baseUrl}/api/chat`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model, stream: true, ...(options ? { options } : {}), messages: promptMessages(messages, context) }),
+              body: JSON.stringify({ model, stream: true, ...keep, ...(options ? { options } : {}), messages: promptMessages(messages, context) }),
               signal: ctrl.signal,
             })
       } catch (err) {
@@ -486,6 +495,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
           body: JSON.stringify({
             model,
             stream: false,
+            ...keep,
             options: { ...(options || {}), num_predict: 1 },
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
@@ -507,6 +517,6 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     chat,
     status,
     warmup,
-    config: { baseUrl, model, numCtx, groq: groqKey ? { url: groqUrl, models: groqModels } : null },
+    config: { baseUrl, model, numCtx, numThread, keepAlive, groq: groqKey ? { url: groqUrl, models: groqModels } : null },
   }
 }

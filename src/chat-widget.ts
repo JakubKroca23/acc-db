@@ -180,7 +180,8 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
   root.append(fab, panel)
   document.body.append(root)
 
-  const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 60
+  const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 80
+  // instant (never smooth) scrolling — smooth scrolling per token makes streaming feel laggy
   const scrollDown = () => {
     log.scrollTop = log.scrollHeight
   }
@@ -355,6 +356,17 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
+      // batch DOM updates: deltas accumulate in answer.content and are painted at most once per frame;
+      // auto-scroll only when the user is (still) near the bottom
+      let frame = 0
+      const paint = () => {
+        frame = 0
+        const stick = nearBottom()
+        b.classList.remove('is-typing')
+        b.removeAttribute('aria-label')
+        setRichText(b, answer.content)
+        if (stick) scrollDown()
+      }
       const handleLine = (line: string) => {
         if (!line.trim()) return
         let obj: { message?: { content?: string }; error?: string }
@@ -364,17 +376,15 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
           return
         }
         if (obj.error) {
+          if (frame) cancelAnimationFrame(frame)
+          frame = 0
           fail(obj.error)
           return
         }
         const delta = obj.message?.content
         if (delta) {
-          const stick = nearBottom()
           answer.content += delta
-          b.classList.remove('is-typing')
-          b.removeAttribute('aria-label')
-          setRichText(b, answer.content)
-          if (stick) scrollDown()
+          if (!frame) frame = requestAnimationFrame(paint)
         }
       }
       for (;;) {
@@ -387,6 +397,10 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
       }
       buf += decoder.decode()
       handleLine(buf)
+      if (frame) {
+        cancelAnimationFrame(frame)
+        paint()
+      }
       if (!answer.content.trim() && !answer.error) fail(GENERIC_ERROR)
     } catch (err) {
       // apiFetch redirects to the login on 401 and throws; anything else = network problem
