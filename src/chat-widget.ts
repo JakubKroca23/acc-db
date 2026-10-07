@@ -47,7 +47,8 @@ function loadHistory(): Msg[] {
   }
 }
 
-export function mountChatWidget(apiFetch: ApiFetch) {
+/** getContext: compact snapshot of the user's current screen, sent with every question (the model answers product/price questions only from it). */
+export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) {
   let messages: Msg[] = loadHistory()
   let loading = false
   let statusChecked = false
@@ -186,6 +187,14 @@ export function mountChatWidget(apiFetch: ApiFetch) {
     fab.focus()
   }
 
+  function safeContext(): unknown {
+    try {
+      return getContext?.() ?? null
+    } catch {
+      return null
+    }
+  }
+
   async function send(text: string) {
     const userMsg: Msg = { role: 'user', content: text }
     messages.push(userMsg)
@@ -212,7 +221,7 @@ export function mountChatWidget(apiFetch: ApiFetch) {
       const res = await apiFetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, context: safeContext() }),
       })
       if (!res.ok || !res.body) {
         const data = (await res.json().catch(() => ({}))) as { error?: string }

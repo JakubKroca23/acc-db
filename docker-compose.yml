@@ -23,6 +23,7 @@ services:
       # AI asistent: Ollama v kontejneru `ollama` na sdílené docker síti `ollama` (port není veřejný)
       - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
+      - OLLAMA_NUM_CTX=${OLLAMA_NUM_CTX:-8192}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.acc-db.rule=Host(`zakazky.contsystem.cz`) && PathPrefix(`/acc-db`)"

@@ -89,8 +89,9 @@ Image obsahuje Python 3 kvůli aktualizaci katalogu z UI.
 
 Plovoucí tlačítko s maskotem „Kapitán Karel“ (pirátský robot, `src/assets/kapitan-karel*.png`) vpravo dole otevře chatovací panel (`src/chat-widget.ts`). Server (`src/server/chat.ts`) přeposílá konverzaci na Ollamu (`/api/chat`, `stream: true`) a NDJSON stream posílá rovnou do prohlížeče; je za stejnou auth gate jako zbytek aplikace.
 
-- Env: `OLLAMA_URL` (výchozí `http://ollama:11434`), `OLLAMA_MODEL` (výchozí `qwen2.5:3b`), `OLLAMA_TIMEOUT_MS` (výchozí 120000).
-- Limity: max. 20 posledních zpráv, 4000 znaků na zprávu, ~16 000 znaků celkem. Chyby česky; Ollama nedostupná → 503 „Kapitán Karel zatím není dostupný (Ollama na serveru neběží).“
+- Env: `OLLAMA_URL` (výchozí `http://ollama:11434`), `OLLAMA_MODEL` (výchozí `qwen2.5:3b`), `OLLAMA_TIMEOUT_MS` (výchozí 120000), `OLLAMA_NUM_CTX` (výchozí 8192 tokenů).
+- Kontext obrazovky: s každým dotazem posílá frontend kompaktní JSON (`chatContext()` v `src/main.ts`): stránka (katalog / hledání / `#/nabidka`), kategorie + související, filtr dodavatele, hledaný text, počet produktů, produkty viditelné na obrazovce (max. 10), produkt s otevřenou „Historií cen“ a obsah cenové nabídky se součty. Server ho očistí a omezí (max. 8 kB, hloubka 5) a vloží jako druhou systémovou zprávu „Aktuální obrazovka uživatele (JSON): …“; model má o produktech a cenách mluvit jen podle něj.
+- Limity: max. 20 posledních zpráv, 4000 znaků na zprávu, ~12 000 znaků celkem. Chyby česky; Ollama nedostupná → 503 „Kapitán Karel zatím není dostupný (Ollama na serveru neběží).“
 - Na VPS běží Ollama jako kontejner `ollama` (port jen `127.0.0.1:11434`, není veřejný). acc-db na ni vidí přes sdílenou docker síť `ollama` (v `docker-compose.yml` jako external):
   ```bash
   docker network create ollama            # jednou

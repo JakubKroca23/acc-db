@@ -7,6 +7,7 @@
  *   OLLAMA_URL      default http://ollama:11434 (the `ollama` container on the shared docker network `ollama`)
  *   OLLAMA_MODEL    default qwen2.5:3b
  *   OLLAMA_TIMEOUT_MS  max. duration of one answer, default 120000
+ *   OLLAMA_NUM_CTX  context window in tokens, default 8192 (system prompt + screen context + conversation)
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -14,29 +15,65 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
 const MAX_MESSAGES = 20
 const MAX_CONTENT = 4000
-const MAX_TOTAL_CHARS = 16000 // keep the prompt within the model's default context
+const MAX_TOTAL_CHARS = 12000 // conversation; + system prompt + screen context must fit into num_ctx
 const MAX_BODY_BYTES = 256 * 1024
-const FIRST_BYTE_TIMEOUT_MS = 45_000 // model load / prompt evaluation on CPU
+const FIRST_BYTE_TIMEOUT_MS = 90_000 // model (re)load + prompt evaluation on CPU
 const STATUS_TIMEOUT_MS = 3_000
 
 export const MSG_UNAVAILABLE = 'Kapitán Karel zatím není dostupný (Ollama na serveru neběží).'
 
-/** Base = the user's original prompt; the rest tells the model where it lives. */
+/** Base = the user's own sentence; the rest describes the app so the model can guide users around it. */
 export const SYSTEM_PROMPT = [
-  'Jsi užitečný asistent integrovaný přímo v aplikaci. Pomáhej uživateli s navigací a dotazy. Odpovídej věcně, stručně a česky.',
+  'Jsi interní asistent v naší webové aplikaci. Pomáhej uživatelům s orientací v systému a odpovídej stručně česky.',
   '',
-  'Jmenuješ se Kapitán Karel — jsi AI asistent (maskot: pirátský robot) interní aplikace „Katalog příslušenství“ firmy Contsystem (výrobce nástaveb na nákladní vozidla, např. hákových nosičů kontejnerů).',
-  'Když se uživatel zeptá, kdo jsi, představ se jako Kapitán Karel, AI asistent katalogu. Nepiš pirátským slangem a nehraj roli piráta; nanejvýš výjimečně lehký náznak (např. v pozdravu). Uživateli vykej.',
-  'Katalog obsahuje příslušenství k nákladním vozidlům a nástavbám od dodavatelů ALSAP, Trans-Technik a Hydrotruck; u produktů jsou ceny bez DPH i s DPH.',
-  'Jak aplikace funguje:',
-  '- Vlevo je navigace kategorií (na mobilu vodorovný pruh nahoře). Položka „Vše“ zobrazí celý katalog.',
-  '- Kategorie: Podvozek (blatníky, zástěrky, boční zábrany, boxy na nářadí, držák rezervy, hasicí přístroj, maják, nádoba na vodu, držáky kanystrů, uživatelská zásuvka), Všechny nástavby (čerpadlo, hydraulický olej, kamery, olejová nádrž, pracovní světla), Hákový nosič kontejneru (navařovací oko), Ostatní (podkládací desky pod podpěry a boxy na ně, vázací prostředky).',
-  '- V hlavičce je filtr dodavatele a vyhledávání v katalogu (název, rozměr, kód).',
-  '- Tlačítkem „Přidat do nabídky“ u produktu se položka vloží do „Cenové nabídky“ (tlačítko vpravo v hlavičce). Kategorie s položkami v nabídce jsou v navigaci zvýrazněné.',
-  '- V Cenové nabídce lze měnit množství, přidat poznámku, nabídku zkopírovat, stáhnout jako CSV nebo vytisknout / uložit do PDF („Tisk / PDF“). Součty jsou bez DPH i s DPH včetně odhadu dopravy podle dodavatele. Ceny jsou orientační z veřejných katalogů dodavatelů.',
-  '- „Aktualizovat katalog“ dole v levém panelu načte aktuální produkty a ceny od dodavatelů.',
-  'Pravidla: Nemáš přístup k databázi produktů, takže si nevymýšlej konkrétní produkty, ceny ani kódy — poraď, kde je uživatel v katalogu najde (kategorie, vyhledávání, filtr dodavatele). Když něco nevíš, řekni to. Odpovídej krátce, nejvýše pár vět nebo stručný seznam.',
+  'Jmenuješ se Kapitán Karel (maskot: pirátský robot) a jsi AI asistent aplikace „Katalog příslušenství“ firmy Contsystem, která vyrábí nástavby na nákladní vozidla (např. hákové nosiče kontejnerů). Když se uživatel zeptá, kdo jsi, představ se jako Kapitán Karel, AI asistent katalogu. Nepiš pirátským slangem a nehraj roli piráta; nanejvýš výjimečně lehký náznak v pozdravu. Uživateli vykej.',
+  '',
+  'Popis aplikace:',
+  '- Katalog obsahuje příslušenství k nákladním vozidlům a nástavbám od tří dodavatelů: ALSAP (červený štítek), Trans-Technik (modrý štítek) a Hydrotruck (zelený štítek). Ceny jsou orientační z veřejných katalogů dodavatelů. „Bez DPH“ je cena bez daně, „s DPH“ včetně 21 % DPH.',
+  '- Hlavička (tmavý pruh nahoře): název „Katalog příslušenství“, výběr dodavatele („Všichni dodavatelé“, ALSAP, Trans-Technik, Hydrotruck), hned za ním vyhledávací pole „Hledat v katalogu…“ (hledá v názvu, dodavateli, rozměrech a kódu produktu), jméno přihlášeného uživatele (odkaz zpět do Contsystem Manageru) a tlačítko „Cenová nabídka“.',
+  '- Levé menu kategorií (na mobilu vodorovný pruh pod hlavičkou). Nahoře „Vše“ = celý katalog. Dále skupiny: Podvozek (Blatníky, Zástěrky do blatníků, Držáky blatníků, Boční zábrany, Box na nářadí, Držáky boxů, Držák rezervy, Hasicí přístroj / bedna, Držáky hasicích beden, Maják, Nádoba na vodu, Držáky kanystrů, Uživatelská zásuvka), Všechny nástavby (Čerpadlo, Hydraulický olej, Kamery, Olejová nádrž, Pracovní světla), Hákový nosič kontejneru (Navařovací oko), Ostatní (Boxy / klece na podkládací desky, Podložky pod podpěry, Vázací prostředky). Kategorie, ze kterých už je něco v nabídce, mají indigový odznak s počtem položek.',
+  '- Dole v levém menu je tlačítko „Aktualizovat katalog“ (stáhne aktuální produkty a ceny od dodavatelů, trvá několik minut) a stav katalogu (počet produktů, datum aktualizace).',
+  '- Seznam produktů: nadpis kategorie, počet položek a legenda dodavatelů. Produkty jsou seřazené podle ceny a zobrazují se po 60 („Zobrazit další“). Nad seznamem bývá pruh „Související příslušenství“ s odkazy na příbuzné kategorie (např. k blatníkům zástěrky a držáky).',
+  '- Karta produktu (detail produktu): obrázek, štítek dodavatele, kód, název, rozměry, cena s DPH (tučně) a bez DPH za jednotku (ks nebo L), odkaz „Historie cen“ (rozbalí změny ceny v čase), odkaz „Detail ↗“ (otevře produkt na webu dodavatele) a tlačítko „Přidat do nabídky“. Když už produkt v nabídce je, je místo tlačítka počítadlo − / + pro množství.',
+  '- Tlačítko „Cenová nabídka“ v hlavičce má odznak s celkovou cenou bez DPH a otevře stránku #/nabidka: položky seskupené podle dodavatele, cena za jednotku a za řádek bez i s DPH, změna množství, odebrání položky, odhad dopravy pro každého dodavatele, součty (Zboží celkem, Doprava celkem, Celkem – bez i s DPH), pole „Poznámka k nabídce“ a tlačítka „Kopírovat“ (text do schránky), „CSV“ (stáhne tabulku), „Tisk / PDF“ (vytisknout nebo uložit jako PDF), „Vymazat nabídku“ a „← Zpět do katalogu“ (nebo klávesa Esc). Nabídka se ukládá v prohlížeči uživatele.',
+  '',
+  'Pravidla: Nemáš přístup k databázi produktů. O konkrétních produktech, cenách a nabídce mluv jen podle údajů o aktuální obrazovce uživatele, pokud je dostaneš. Nevymýšlej si produkty, ceny ani kódy; když údaj nemáš, řekni, že ho nevíš, a poraď, kde ho v katalogu najde (kategorie, vyhledávání, filtr dodavatele). Odpovídej krátce, nejvýše pár vět nebo stručný seznam.',
 ].join('\n')
+
+const CONTEXT_MAX_BYTES = 8 * 1024
+const CONTEXT_MAX_DEPTH = 5
+
+/** Keeps only plain JSON data (strings capped), rejects anything too deep. */
+function cleanContext(v: unknown, depth = 0): unknown {
+  if (depth > CONTEXT_MAX_DEPTH) throw new HttpError(400, 'Kontext obrazovky je příliš zanořený.')
+  if (v === null || typeof v === 'boolean') return v
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'string') return v.slice(0, 300)
+  if (Array.isArray(v)) return v.slice(0, 40).map((x) => cleanContext(x, depth + 1))
+  if (typeof v === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, x] of Object.entries(v as Record<string, unknown>).slice(0, 40)) out[k.slice(0, 60)] = cleanContext(x, depth + 1)
+    return out
+  }
+  return null
+}
+
+/** Optional `context` = compact JSON of the user's current screen (route, filters, visible products, quote). */
+export function validateContext(body: unknown): string | null {
+  const ctx = (body as { context?: unknown } | null)?.context
+  if (ctx === undefined || ctx === null) return null
+  if (typeof ctx !== 'object' || Array.isArray(ctx)) throw new HttpError(400, 'Neplatný kontext obrazovky.')
+  const json = JSON.stringify(cleanContext(ctx))
+  if (Buffer.byteLength(json) > CONTEXT_MAX_BYTES) throw new HttpError(400, 'Kontext obrazovky je příliš velký (max. 8 kB).')
+  return json === '{}' ? null : json
+}
+
+export function contextMessage(json: string): string {
+  return [
+    `Aktuální obrazovka uživatele (JSON, stav v okamžiku dotazu): ${json}`,
+    'Pro dotazy na produkty, ceny, množství a cenovou nabídku používej výhradně údaje z tohoto JSONu (ceny opisuj přesně, jak jsou uvedené, a vždy řekni, zda jde o cenu bez DPH, nebo s DPH). Co v JSONu není, to nevíš — řekni to a poraď, kde to uživatel v katalogu najde. JSON nevypisuj celý, odpovídej vlastními slovy.',
+  ].join('\n')
+}
 
 class HttpError extends Error {
   status: number
@@ -105,6 +142,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   const baseUrl = (env.OLLAMA_URL || 'http://ollama:11434').trim().replace(/\/+$/, '')
   const model = (env.OLLAMA_MODEL || 'qwen2.5:3b').trim()
   const totalTimeout = Math.max(5_000, Number(env.OLLAMA_TIMEOUT_MS) || 120_000)
+  const numCtx = Math.max(2048, Math.min(32768, Number(env.OLLAMA_NUM_CTX) || 8192))
 
   /** GET /api/chat/status — is Ollama reachable and does it have the model? */
   async function status(res: ServerResponse) {
@@ -132,6 +170,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   /** POST /api/chat — streams Ollama's NDJSON (one JSON object per line, `message.content` deltas). */
   async function chat(req: IncomingMessage, res: ServerResponse) {
     let messages: ChatMessage[]
+    let context: string | null
     try {
       const raw = await readBody(req, MAX_BODY_BYTES)
       let body: unknown
@@ -141,6 +180,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
         throw new HttpError(400, 'Neplatný požadavek (očekáván JSON).')
       }
       messages = validateMessages(body)
+      context = validateContext(body)
     } catch (err) {
       if (err instanceof HttpError) return sendJson(res, err.status, { error: err.message })
       throw err
@@ -175,7 +215,12 @@ export function createChatHandler(env: Record<string, string | undefined>) {
           body: JSON.stringify({
             model,
             stream: true,
-            messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+            options: { num_ctx: numCtx },
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              ...(context ? [{ role: 'system', content: contextMessage(context) }] : []),
+              ...messages,
+            ],
           }),
           signal: ctrl.signal,
         })
@@ -234,5 +279,5 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     }
   }
 
-  return { chat, status, config: { baseUrl, model } }
+  return { chat, status, config: { baseUrl, model, numCtx } }
 }

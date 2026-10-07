@@ -1300,4 +1300,105 @@ document.addEventListener('keydown', (e) => {
 
 render()
 void loadBootstrap()
-mountChatWidget(apiFetch)
+// ── AI assistant: compact snapshot of what the user sees (sent with every chat question) ──
+const CHAT_CTX_MAX = 7000 // bytes; the server caps at 8 kB
+
+function chatProduct(p: Product, withCategory = true) {
+  return {
+    nazev: p.name.slice(0, 90),
+    dodavatel: p.supplier,
+    ...(p.sku ? { kod: p.sku } : {}),
+    ...(withCategory ? { kategorie: typeName(p.typeSlug) } : {}),
+    cenaBezDph: formatCzkExact(p.price),
+    cenaSDph: formatCzkExact(p.priceVat),
+    jednotka: p.unit,
+  }
+}
+
+/** Products whose cards are (at least partly) on screen; fallback = the top of the list. */
+function visibleProducts(limit: number): Product[] {
+  const ids: string[] = []
+  const vh = window.innerHeight
+  for (const btn of region('main').querySelectorAll<HTMLElement>('.product-card [data-history]')) {
+    const r = btn.closest('.product-card')!.getBoundingClientRect()
+    if (r.bottom > 0 && r.top < vh && r.width > 0) ids.push(btn.dataset.history!)
+    if (ids.length >= limit) break
+  }
+  const list = ids.map((id) => productsById.get(id)).filter((p): p is Product => !!p)
+  return list.length ? list : catalogItems.slice(0, limit)
+}
+
+function chatContext(): Record<string, unknown> {
+  const lines = cartLines()
+  const shipping = shippingForCart(lines)
+  const goodsEx = lines.reduce((a, l) => a + l.lineExVat, 0)
+  const goodsVat = lines.reduce((a, l) => a + l.lineVat, 0)
+  const shipEx = shipping.reduce((a, s) => a + s.shippingExVat, 0)
+  const shipVat = shipping.reduce((a, s) => a + s.shippingVat, 0)
+  const t = currentType()
+  const quote = (maxItems: number) => ({
+    pocetPolozek: lines.length,
+    ...(lines.length
+      ? {
+          polozky: lines.slice(0, maxItems).map((l) => ({
+            nazev: l.product.name.slice(0, 80),
+            dodavatel: l.product.supplier,
+            ...(l.product.sku ? { kod: l.product.sku } : {}),
+            mnozstvi: `${l.qty} ${l.product.unit}`,
+            cenaZaJednotkuBezDph: formatCzkExact(l.product.price),
+            radekBezDph: formatCzkExact(l.lineExVat),
+            radekSDph: formatCzkExact(l.lineVat),
+          })),
+          ...(lines.length > maxItems ? { dalsichPolozekNeuvedeno: lines.length - maxItems } : {}),
+          zboziCelkemBezDph: formatCzkExact(goodsEx),
+          zboziCelkemSDph: formatCzkExact(goodsVat),
+          dopravaOdhadBezDph: formatCzkExact(shipEx),
+          dopravaOdhadSDph: formatCzkExact(shipVat),
+          celkemBezDph: formatCzkExact(goodsEx + shipEx),
+          celkemSDph: formatCzkExact(goodsVat + shipVat),
+          ...(quoteNote.trim() ? { poznamka: quoteNote.trim().slice(0, 200) } : {}),
+        }
+      : {}),
+  })
+  const open = historyOpenId ? productsById.get(historyOpenId) : undefined
+  const history = open ? priceHistoryCache[open.id] : undefined
+  const build = (maxProducts: number, maxItems: number): Record<string, unknown> => {
+    const base: Record<string, unknown> = {
+      obrazovka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : viewMode === 'search' ? 'Katalog – výsledky hledání' : 'Katalog',
+    }
+    if (viewMode !== 'quote') {
+      if (viewMode === 'browse') {
+        base.kategorie = selectedSlug === ALL_SLUG ? 'Vše (celý katalog)' : t ? `${t.name} (skupina ${t.category})` : '—'
+        const related = relatedFor(selectedSlug).map((r) => r.name)
+        if (related.length && selectedSlug !== ALL_SLUG) base.souvisejiciKategorie = related.slice(0, 8)
+      }
+      base.filtrDodavatele = supplierFilter || 'Všichni dodavatelé'
+      if (searchQ.trim()) base.hledanyText = searchQ.trim().slice(0, 100)
+      base.pocetProduktuVSeznamu = catalogLoading ? 'načítá se' : catalogItems.length
+      if (open) {
+        base.otevrenyDetailProduktu = {
+          ...chatProduct(open),
+          ...(open.dimensions ? { rozmery: open.dimensions.slice(0, 80) } : {}),
+          ...(history
+            ? {
+                historieCen: history.length
+                  ? history.slice(0, 5).map((h) => `${formatHistoryDate(h.recordedAt)}: ${formatCzkExact(h.oldPriceVat)} → ${formatCzkExact(h.newPriceVat)} s DPH`)
+                  : 'beze změny',
+              }
+            : {}),
+        }
+      }
+      if (maxProducts) base.produktyNaObrazovce = visibleProducts(maxProducts).map((p) => chatProduct(p, viewMode === 'search' || selectedSlug === ALL_SLUG))
+    }
+    base.cenovaNabidka = quote(maxItems)
+    return base
+  }
+  // shrink until it fits (fewer visible products first, then fewer quote lines)
+  for (const [mp, mi] of [[10, 25], [6, 25], [3, 15], [0, 10], [0, 5], [0, 0]]) {
+    const ctx = build(mp, mi)
+    if (new TextEncoder().encode(JSON.stringify(ctx)).length <= CHAT_CTX_MAX) return ctx
+  }
+  return { obrazovka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : 'Katalog' }
+}
+
+mountChatWidget(apiFetch, chatContext)
