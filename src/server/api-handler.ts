@@ -42,7 +42,18 @@ type GateLike = {
 export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
   const databaseId = env.APPWRITE_DATABASE_ID || 'acc-db'
   const updateToken = env.ACC_DB_UPDATE_TOKEN || ''
-  const assistant = createChatHandler(env)
+  const assistant = createChatHandler(env, {
+    loadCatalog: () => loadCatalog(),
+    categoryMap: () => loadCategoryMap(),
+    priceHistory: async (productId: string) =>
+      (await fetchAllRows('price_history', [Query.equal('productId', productId), Query.orderDesc('recordedAt')])).map((row) => ({
+        recordedAt: String(row.recordedAt),
+        oldPrice: Number(row.oldPrice),
+        newPrice: Number(row.newPrice),
+        oldPriceVat: Number(row.oldPriceVat),
+        newPriceVat: Number(row.newPriceVat),
+      })),
+  })
 
   function client() {
     return new Client()

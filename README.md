@@ -131,3 +131,11 @@ Pokud HT zůstane nedostupný, seed použije tržní odhad jen pro podkládací 
 - `category-map.json` → položka může mít `maxPages` (Hydrotruck čerpadla mají ~20 stran,
   záměrně bereme jen první stranu). Když zdrojová stránka selže (HT občas vrací chybovou
   stránku 500), převezmou se poslední známé produkty dané kategorie, aby je seed nesmazal.
+
+### Nástroje Kapitána Karla (function calling)
+
+Modely GroqCloud mají nástroje (smyčka max. 5 kroků na serveru, `src/server/chat-tools.ts`):
+- čtení (server, jen čtení z acc-db): `hledat_produkty`, `detail_produktu`, `seznam_kategorii`, `stav_nabidky` (z obsahu nabídky, který posílá prohlížeč);
+- akce (server je ověří a pošle prohlížeči jako událost `action`, prohlížeč je provede a ukáže štítek s „Zpět“): `otevrit_kategorii`, `nastavit_filtr_dodavatele`, `hledat_v_katalogu`, `otevrit_detail_produktu`, `pridat_do_nabidky`, `zmenit_mnozstvi_v_nabidce`, `odebrat_z_nabidky`, `otevrit_nabidku`. Žádný zápis do Appwrite, žádné mazání celé nabídky.
+
+Lokální `qwen2.5:3b` má nástroje vypnuté (na CPU serveru ~2 min na dotaz a „přidával“ bez volání nástroje); zapnutí `OLLAMA_TOOLS=on` (malá sada) / `all` / seznam, pak doporučeno `OLLAMA_NUM_CTX=8192`. `GROQ_TOOLS=off` vypne nástroje pro Groq.

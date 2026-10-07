@@ -1,7 +1,8 @@
 /**
  * Floating AI assistant „Kapitán Karel“ (mascot: pirate robot) — bottom-right button + chat panel.
  * Talks to POST /acc-db/api/chat, which streams NDJSON events: text deltas `{"message":{"content":"…"}}`,
- * `{"type":"status"}` (progress), `{"type":"limits"}` (GroqCloud rate limits), `{"error"}`.
+ * `{"type":"status"}` (tool progress), `{"type":"action"}` (quote / navigation changes the server validated —
+ * applied here via the host), `{"type":"limits"}` (GroqCloud rate limits), `{"error"}`.
  * All text is rendered via textContent / DOM nodes (never innerHTML) → model output cannot inject markup.
  */
 
@@ -9,14 +10,18 @@ import karelHead from './assets/kapitan-karel-head.png'
 import karelFull from './assets/kapitan-karel.png'
 
 type Role = 'user' | 'assistant'
-type Msg = { role: Role; content: string; error?: boolean; model?: string }
+type Msg = { role: Role; content: string; error?: boolean; model?: string; actions?: string[] }
 type LimitBar = { limit: number; used: number; remaining: number; resetAt: number | null; source: 'groq' | 'local' } | null
 type ModelLimits = { rpd: LimitBar; tpm: LimitBar; rpm: LimitBar; tpd: LimitBar; blockedUntil: number | null; updatedAt: number | null }
 type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq'; available: boolean; tools?: boolean; limits?: ModelLimits | null }
 type ApiFetch = (path: string, init?: RequestInit) => Promise<Response>
 
+/** An action from the model (already validated by the server); the host applies it to the app state. */
+export type ChatAction = { name: string; args: Record<string, unknown>; label: string; product?: { id: string } & Record<string, unknown>; prevQty?: number }
 export type ChatHost = {
   getContext?: () => unknown
+  getQuote?: () => { id: string; qty: number }[]
+  applyAction?: (a: ChatAction) => { undo?: () => void } | void
 }
 
 const HISTORY_KEY = 'acc-db-chat-v1'
@@ -175,7 +180,8 @@ function limitBars(m: ModelOption, compact: boolean): HTMLElement {
   return box
 }
 
-/** host.getContext: compact snapshot of the user's current screen, sent with every question. */
+/** host.getContext: compact snapshot of the user's current screen, sent with every question;
+ *  host.getQuote: the quote as [{id, qty}] for the quote tools; host.applyAction: executes model actions. */
 export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   let messages: Msg[] = loadHistory()
   let loading = false
@@ -283,21 +289,42 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     }
   }
 
+  function chip(label: string, undo?: () => void) {
+    const c = el('div', 'chat-chip')
+    c.append(el('span', 'chat-chip-label', label))
+    if (undo) {
+      const u = el('button', 'chat-chip-undo', 'Zpět')
+      u.type = 'button'
+      u.title = 'Vrátit tuto změnu'
+      u.addEventListener('click', () => {
+        undo()
+        c.classList.add('is-undone')
+        u.remove()
+        c.append(el('span', 'chat-chip-note', 'vráceno'))
+      })
+      c.append(u)
+    }
+    return c
+  }
+
   function bubble(m: Msg) {
     const row = el('div', `chat-row ${m.role === 'user' ? 'from-user' : 'from-assistant'}`)
     const col = el('div', 'chat-col')
     const b = el('div', `chat-bubble${m.error ? ' is-error' : ''}`)
     if (m.role === 'assistant' && !m.error) setRichText(b, m.content)
     else b.textContent = m.content
+    const chips = el('div', 'chat-chips')
+    for (const a of m.actions || []) chips.append(chip(a))
+    chips.hidden = !m.actions?.length
     const status = el('div', 'chat-status')
     status.hidden = true
     const meta = el('div', 'chat-meta', m.model ? shortLabel(m.model) : '')
     meta.hidden = !m.model
     if (m.model) meta.title = `Odpověděl: ${m.model}`
-    col.append(b, status, meta)
+    col.append(b, status, chips, meta)
     if (m.role === 'assistant') row.append(avatar('chat-msg-avatar'))
     row.append(col)
-    return { row, b, status, meta }
+    return { row, b, chips, status, meta }
   }
 
   function renderLog() {
@@ -311,6 +338,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         img,
         el('p', 'chat-empty-hello', `Ahoj, jsem ${NAME}.`),
         el('p', 'chat-empty-ask', 'S čím v katalogu potřebujete pomoct?'),
+        el('p', 'chat-empty-tip', 'Umím vyhledat produkty a ceny, otevřít kategorii nebo přidat zboží do nabídky.'),
       )
       log.append(empty)
     } else {
@@ -405,6 +433,10 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         const top = el('div', 'chat-model-row-top')
         top.append(el('span', 'chat-model-name', shortLabel(x.label)), el('span', `chat-model-provider is-${x.provider}`, x.provider === 'groq' ? 'GroqCloud' : 'lokální'))
         if (!x.available) top.append(el('span', 'chat-model-off', 'nedostupný'))
+        if (x.tools === false) {
+          top.append(el('span', 'chat-model-off is-notools', 'bez nástrojů'))
+          row.title = 'Tento model jen odpovídá: neumí sám hledat v katalogu ani provádět akce (přidat do nabídky, otevřít kategorii…).'
+        } else row.title = 'Umí hledat v katalogu a provádět akce (přidat do nabídky, otevřít kategorii, filtr…).'
         row.append(top, limitBars(x, false))
         return row
       }),
@@ -566,6 +598,20 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
       b.textContent = answer.content
     }
 
+    const handleAction = (a: ChatAction) => {
+      const stick = nearBottom()
+      let undo: (() => void) | undefined
+      try {
+        undo = safe(() => host.applyAction?.(a), undefined)?.undo
+      } catch {
+        undo = undefined
+      }
+      ;(answer.actions ||= []).push(a.label)
+      view.chips.hidden = false
+      view.chips.append(chip(a.label, undo))
+      if (stick) scrollDown()
+    }
+
     try {
       const res = await apiFetch('/chat', {
         method: 'POST',
@@ -573,6 +619,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         body: JSON.stringify({
           messages: history,
           context: safe(host.getContext, null),
+          quote: safe(host.getQuote, []),
           ...(selectedModel ? { model: selectedModel } : {}),
         }),
       })
@@ -594,7 +641,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
       let buf = ''
       const handleLine = (line: string) => {
         if (!line.trim()) return
-        let obj: { type?: string; message?: { content?: string }; error?: string; text?: string; model?: string; limits?: ModelLimits; retryAfter?: number }
+        let obj: { type?: string; message?: { content?: string }; error?: string; text?: string; model?: string; limits?: ModelLimits; retryAfter?: number } & Partial<ChatAction>
         try {
           obj = JSON.parse(line)
         } catch {
@@ -610,6 +657,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
           return
         }
         if (obj.type === 'status') return setStatus(obj.text || null)
+        if (obj.type === 'action' && obj.name && obj.label) return handleAction(obj as ChatAction)
         if (obj.type === 'limits') return applyLimits(obj.model || modelAtSend, obj.limits)
         const delta = obj.message?.content
         if (delta) {

@@ -1,7 +1,7 @@
 import './style.css'
 import type { AccessoryType, CartMap, CatalogUpdateStatus, PriceHistoryEntry, Product, RelatedGroup } from './types'
 import { estimateShippingBySupplier, type ShippingEstimate } from './shipping'
-import { mountChatWidget } from './chat-widget'
+import { mountChatWidget, type ChatAction } from './chat-widget'
 
 const STORAGE_KEY = 'acc-db-cart-v2'
 const NOTE_KEY = 'acc-db-quote-note'
@@ -208,7 +208,9 @@ async function hydrateCartProducts() {
   }
 }
 
+let loadSeq = 0
 async function loadProductsForCurrent() {
+  const seq = ++loadSeq // a newer load (e.g. category then supplier filter from Kapitán Karel) wins
   catalogLoading = true
   catalogError = null
   render()
@@ -222,6 +224,7 @@ async function loadProductsForCurrent() {
     if (supplierFilter) params.set('supplier', supplierFilter)
     const res = await apiFetch(`/products?${params}`)
     const data = await res.json()
+    if (seq !== loadSeq) return
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     catalogItems = data.items as Product[]
     renderLimit = PAGE_SIZE
@@ -229,6 +232,7 @@ async function loadProductsForCurrent() {
     for (const p of catalogItems) productsById.set(p.id, p)
     catalogLoading = false
   } catch (err) {
+    if (seq !== loadSeq) return
     catalogLoading = false
     catalogError = err instanceof Error ? err.message : 'Chyba'
   }
@@ -1402,4 +1406,92 @@ function chatContext(): Record<string, unknown> {
   return { Stránka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : 'Katalog' }
 }
 
-mountChatWidget(apiFetch, { getContext: chatContext })
+// ── Kapitán Karel actions: tool calls the server validated, applied to this browser's state ──
+function chatQuote() {
+  return Object.entries(cart)
+    .filter(([, q]) => q > 0)
+    .map(([id, qty]) => ({ id, qty }))
+}
+
+/** leave the quote page without touching history (the chat drives navigation) */
+function toCatalogView() {
+  if (viewMode === 'quote') {
+    quotePushed = false
+    history.replaceState(null, '', catalogUrl())
+  }
+}
+
+async function focusProduct(p: Product) {
+  productsById.set(p.id, p)
+  toCatalogView()
+  selectedSlug = p.typeSlug
+  viewMode = 'browse'
+  searchQ = ''
+  searchEl.value = ''
+  supplierFilter = ''
+  history.replaceState(null, '', `#/${p.typeSlug}`)
+  await loadProductsForCurrent()
+  const idx = catalogItems.findIndex((x) => x.id === p.id)
+  if (idx >= renderLimit) renderLimit = idx + 1
+  historyOpenId = null
+  void togglePriceHistory(p.id) // opens „Historie cen“ (renders)
+  const card = app.querySelector(`[data-history="${CSS.escape(p.id)}"]`)?.closest<HTMLElement>('.product-card')
+  if (card) {
+    card.scrollIntoView({ block: 'center' })
+    card.classList.add('is-flash')
+    window.setTimeout(() => card.classList.remove('is-flash'), 2400)
+  }
+}
+
+function applyChatAction(a: ChatAction): { undo?: () => void } | void {
+  const args = a.args || {}
+  const product = (): Product | undefined => {
+    const id = String(args.id || '')
+    if (a.product && a.product.id === id) productsById.set(id, a.product as unknown as Product)
+    return productsById.get(id)
+  }
+  switch (a.name) {
+    case 'otevrit_kategorii': {
+      const slug = String(args.slug || '')
+      toCatalogView()
+      if (slug === ALL_SLUG || types.some((t) => t.slug === slug)) selectType(slug)
+      return
+    }
+    case 'nastavit_filtr_dodavatele':
+      toCatalogView()
+      supplierFilter = String(args.dodavatel || '')
+      viewMode = searchQ.trim() ? 'search' : 'browse'
+      if (viewMode === 'browse' && !selectedSlug) selectedSlug = ALL_SLUG
+      void loadProductsForCurrent()
+      return
+    case 'hledat_v_katalogu': {
+      toCatalogView()
+      searchQ = String(args.text || '').slice(0, 80)
+      searchEl.value = searchQ
+      viewMode = 'search'
+      selectedSlug = null
+      window.scrollTo({ top: 0 })
+      void loadProductsForCurrent()
+      return
+    }
+    case 'otevrit_detail_produktu': {
+      const p = product()
+      if (p) void focusProduct(p)
+      return
+    }
+    case 'pridat_do_nabidky':
+    case 'zmenit_mnozstvi_v_nabidce':
+    case 'odebrat_z_nabidky': {
+      const p = product()
+      if (!p) return
+      const prev = cart[p.id] || 0
+      setQty(p.id, Number(args.mnozstvi) || 0)
+      return { undo: () => setQty(p.id, prev) }
+    }
+    case 'otevrit_nabidku':
+      openQuoteView()
+      return
+  }
+}
+
+mountChatWidget(apiFetch, { getContext: chatContext, getQuote: chatQuote, applyAction: applyChatAction })

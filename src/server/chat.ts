@@ -13,13 +13,15 @@
  *   OLLAMA_NUM_THREAD  optional CPU threads for generation (default: Ollama's choice = physical cores)
  *   GROQ_API_KEY    enables GroqCloud models (server-side only, never sent to the browser)
  *   GROQ_MODELS     optional comma separated Groq model ids = exact list + order (default: every chat-capable
- *                   model the key's /models returns, gpt-oss-120b first and default)
- *   GROQ_LIMITS     optional JSON {model: {rpm, rpd, tpm, tpd}} overriding the known plan limits (free tier defaults)
- *   GROQ_TIMEOUT_MS max. duration of one Groq answer, default 90000
+ *                   model the key's /models returns, gpt-oss-120b first)
+ *   GROQ_LIMITS     optional JSON {model: {rpm, rpd, tpm, tpd}} overriding the known plan limits
+ *   GROQ_TIMEOUT_MS max. duration of one Groq answer incl. tool rounds, default 90000
  *   CHAT_STATE_FILE optional JSON file for the Groq rate-limit counters (survives restarts)
+ *   GROQ_TOOLS / OLLAMA_TOOLS  tools offered to the model: "all" | "off" | comma separated tool names
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createGroqLimits, type ModelLimits } from './groq-limits.ts'
+import { createChatTools, TOOL_DEFS, TOOL_STATUS, ALL_TOOLS, type CatalogData, type ToolDef, type ToolEvent } from './chat-tools.ts'
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
@@ -33,18 +35,28 @@ const STATUS_TIMEOUT_MS = 3_000
 export const MSG_UNAVAILABLE = 'Kapitán Karel zatím není dostupný (Ollama na serveru neběží).'
 
 /** Base = the user's own sentence; the rest describes the app so the model can guide users around it.
- *  Kept compact: the local model evaluates the prompt on the VPS CPU (and Groq's free tier counts tokens/min). */
+ *  Kept compact on purpose: Groq free tier allows only ~8K tokens/min and every tool round re-sends it. */
 export const SYSTEM_PROMPT = [
   'Jsi interní asistent v naší webové aplikaci. Pomáhej uživatelům s orientací v systému a odpovídej stručně česky.',
-  'Jsi Kapitán Karel (maskot: pirátský robot), AI asistent aplikace „Katalog příslušenství“ firmy Contsystem (nástavby na nákladní vozidla). Když se zeptají, kdo jsi, představ se. Nehraj piráta. Uživateli vždy vykej (Vy, najdete, klikněte), nikdy netykej.',
+  'Jsi Kapitán Karel (maskot: pirátský robot), AI asistent aplikace „Katalog příslušenství“ firmy Contsystem (nástavby na nákladní vozidla). Když se zeptají, kdo jsi, představ se. Nehraj piráta. Uživateli vždy vykej – piš „můžete, klikněte, najdete, Vaše nabídka“, nikdy „můžeš, klikni, najdeš, tvoje“.',
   '',
   'Aplikace: příslušenství k nákladním vozidlům od dodavatelů ALSAP (červený štítek), Trans-Technik (modrý) a Hydrotruck (zelený); orientační ceny bez DPH a s DPH (21 %).',
   '- Hlavička: filtr dodavatele, hledání „Hledat v katalogu…“ (název, rozměr, kód), tlačítko „Cenová nabídka“ s odznakem ceny bez DPH.',
-  '- Levé menu kategorií (na mobilu pruh nahoře): „Vše“ = celý katalog; Podvozek: Blatníky, Zástěrky do blatníků, Držáky blatníků, Boční zábrany, Box na nářadí, Držáky boxů, Držák rezervy, Hasicí přístroj / bedna, Držáky hasicích beden, Maják, Nádoba na vodu, Držáky kanystrů, Uživatelská zásuvka; Všechny nástavby: Čerpadlo, Hydraulický olej, Kamery, Olejová nádrž, Pracovní světla; Hákový nosič kontejneru: Navařovací oko; Ostatní: Boxy / klece na podkládací desky, Podložky pod podpěry, Vázací prostředky. Kategorie s položkami v nabídce mají odznak s počtem. Dole „Aktualizovat katalog“ (stáhne nové ceny, trvá několik minut).',
-  '- Produkty jsou seřazené podle ceny (po 60, „Zobrazit další“), nad nimi „Související příslušenství“. Karta produktu: dodavatel, kód, název, rozměry, cena s/bez DPH, „Historie cen“, „Detail ↗“ (web dodavatele), „Přidat do nabídky“ nebo počítadlo − +.',
+  '- Levé menu kategorií (na mobilu pruh nahoře): „Vše“ = celý katalog; Podvozek: Blatníky, Zástěrky do blatníků, Držáky blatníků, Boční zábrany, Box na nářadí, Držáky boxů, Držák rezervy, Hasicí přístroj / bedna, Držáky hasicích beden, Maják, Nádoba na vodu, Držáky kanystrů, Uživatelská zásuvka; Všechny nástavby: Čerpadlo, Hydraulický olej, Kamery, Olejová nádrž, Pracovní světla; Hákový nosič kontejneru: Navařovací oko; Ostatní: Boxy / klece na podkládací desky, Podložky pod podpěry, Vázací prostředky. Dole „Aktualizovat katalog“ (stáhne nové ceny, trvá několik minut).',
+  '- Produkty jsou seřazené podle ceny, nad nimi „Související příslušenství“. Karta produktu: dodavatel, kód, název, rozměry, cena s/bez DPH, „Historie cen“, „Detail ↗“ (web dodavatele), „Přidat do nabídky“ nebo počítadlo − +.',
   '- Cenová nabídka (#/nabidka): položky podle dodavatelů, množství, odhad dopravy, součty bez i s DPH, „Poznámka k nabídce“, „Kopírovat“, „CSV“, „Tisk / PDF“, „Vymazat nabídku“, „← Zpět do katalogu“ (Esc). Ukládá se v prohlížeči.',
   '',
-  'Pravidla: Nemáš přístup k databázi produktů. U dotazu můžeš dostat „Aktuální obrazovka uživatele“ (co uživatel právě vidí: stránka, kategorie, filtr, produkty, nabídka se součty); o produktech, cenách a nabídce mluv jen podle ní. Nic si nevymýšlej; co nevíš, přiznej a poraď, kde to v katalogu najde. Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou).',
+  'Pravidla:',
+  '- Produkty, ceny, kódy a rozměry vždy zjisti nástrojem hledat_produkty nebo detail_produktu; nic si nevymýšlej. Cena ve filtru je bez DPH. Obsah nabídky zjistíš nástrojem stav_nabidky.',
+  '- Akce v aplikaci (kategorie, filtr, hledání, zobrazení produktu, změny nabídky) dělej nástroji jen na žádost uživatele; id produktu ber jen z výsledků nástrojů. Pak stručně potvrď, co jsi udělal. Chybu nebo prázdný výsledek přiznej.',
+  '- „Aktuální obrazovka uživatele“ u dotazu = co uživatel právě vidí.',
+  '- Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou). Vždy vykej.',
+].join('\n')
+
+/** Variant for a model without tools (the local model when OLLAMA_TOOLS=off): same app description, no tool rules. */
+export const SYSTEM_PROMPT_BASIC = [
+  SYSTEM_PROMPT.slice(0, SYSTEM_PROMPT.indexOf('\nPravidla:')),
+  'Pravidla: Nemáš přístup k databázi produktů. U dotazu můžeš dostat „Aktuální obrazovka uživatele“ (co uživatel právě vidí: stránka, kategorie, filtr, produkty, nabídka se součty); o produktech, cenách a nabídce mluv jen podle ní. Nic si nevymýšlej; co nevíš, přiznej a poraď, kde to v katalogu najde. Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou). Vždy vykej.',
 ].join('\n')
 
 const CONTEXT_MAX_BYTES = 8 * 1024
@@ -94,7 +106,7 @@ export function withContext(json: string, question: string): string {
   return [
     'Aktuální obrazovka uživatele (údaje z aplikace v okamžiku dotazu):',
     renderContext(JSON.parse(json)),
-    '(O produktech, cenách a nabídce odpovídej jen podle těchto údajů, ceny opisuj přesně a uveď, zda jsou bez DPH, nebo s DPH. Co v nich není, nevíš.)',
+    '(O produktech, cenách a nabídce odpovídej jen podle těchto údajů nebo výsledků nástrojů, ceny opisuj přesně a uveď, zda jsou bez DPH, nebo s DPH.)',
     '',
     `Dotaz: ${question}`,
   ].join('\n')
@@ -163,15 +175,31 @@ export function validateMessages(body: unknown): ChatMessage[] {
   return msgs
 }
 
+/** Optional `quote` = the user's quote (localStorage in the browser) as [{id, qty}] — used by the quote tools. */
+export function validateQuote(body: unknown): Map<string, number> {
+  const q = (body as { quote?: unknown } | null)?.quote
+  const out = new Map<string, number>()
+  if (q === undefined || q === null) return out
+  if (!Array.isArray(q) || q.length > 300) throw new HttpError(400, 'Neplatný obsah nabídky.')
+  for (const it of q) {
+    const id = (it as { id?: unknown })?.id
+    const qty = Math.floor(Number((it as { qty?: unknown })?.qty))
+    if (typeof id !== 'string' || !id || id.length > 64 || !Number.isFinite(qty)) throw new HttpError(400, 'Neplatná položka nabídky.')
+    if (qty > 0) out.set(id, Math.min(qty, 9999))
+  }
+  return out
+}
+
 export type ModelOption = {
   id: string
   label: string
   provider: 'ollama' | 'groq'
   model: string
   available: boolean
+  tools: boolean
   limits?: ModelLimits | null
 }
-type ModelChoice = Omit<ModelOption, 'available' | 'limits'>
+type ModelChoice = Omit<ModelOption, 'available' | 'limits' | 'tools'>
 
 /** Preferred order when GROQ_MODELS is not set; any other chat model from /models follows alphabetically. */
 const GROQ_PREFERRED = ['openai/gpt-oss-120b', 'qwen/qwen3.8-27b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile', 'minimaxai/minimax-m2.7', 'llama-3.1-8b-instant']
@@ -191,6 +219,7 @@ const GROQ_LABELS: Record<string, string> = {
   'minimaxai/minimax-m2.7': 'MiniMax M2.7',
 }
 const GROQ_LIST_TTL_MS = 10 * 60_000
+const MAX_ROUNDS = 5
 
 function groqLabel(model: string) {
   return `GroqCloud – ${GROQ_LABELS[model] || model.split('/').pop()}`
@@ -208,13 +237,77 @@ function groqExtras(model: string): Record<string, unknown> {
   return {}
 }
 
+/** Local qwen2.5:3b: tools OFF by default — tested on the VPS CPU it took ~2 min per tool question and claimed
+ *  actions it never called. OLLAMA_TOOLS=on → this reduced set, or all / a comma list. */
+const OLLAMA_DEFAULT_TOOLS = ['hledat_produkty', 'detail_produktu', 'pridat_do_nabidky', 'otevrit_detail_produktu']
+
+function toolSet(spec: string | undefined, def: string[]): ToolDef[] {
+  const s = (spec || '').trim().toLowerCase()
+  if (s === 'off' || s === 'none' || s === '0') return []
+  const names = s === 'all' ? ALL_TOOLS : s && s !== 'on' ? s.split(',').map((x) => x.trim()) : def
+  return TOOL_DEFS.filter((t) => names.includes(t.function.name))
+}
+
 const errText = (err: unknown) => (err instanceof Error ? (err.cause as Error)?.message || err.message : String(err))
 
-export function createChatHandler(env: Record<string, string | undefined>) {
+/** An upstream (model provider) failure with a Czech message for the user. */
+class UpstreamError extends Error {
+  status: number
+  retryAfter: number | null
+  constructor(status: number, message: string, retryAfter: number | null = null) {
+    super(message)
+    this.status = status
+    this.retryAfter = retryAfter
+  }
+}
+
+type ToolCall = { id: string; name: string; args: Record<string, unknown>; rawArgs: string; bad: boolean }
+type Round = { text: string; calls: ToolCall[] }
+type Msg = Record<string, unknown>
+
+function parseArgs(raw: unknown): { args: Record<string, unknown>; rawArgs: string; bad: boolean } {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { args: raw as Record<string, unknown>, rawArgs: JSON.stringify(raw), bad: false }
+  const s = typeof raw === 'string' ? raw : ''
+  if (!s.trim()) return { args: {}, rawArgs: '{}', bad: false }
+  try {
+    const v = JSON.parse(s)
+    if (v && typeof v === 'object' && !Array.isArray(v)) return { args: v, rawArgs: s, bad: false }
+  } catch {
+    /* fallthrough */
+  }
+  return { args: {}, rawArgs: '{}', bad: true }
+}
+
+/** Reads a fetch body line by line. */
+async function* lines(body: ReadableStream<Uint8Array>, onChunk: () => void) {
+  const reader = body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    onChunk()
+    buf += dec.decode(value, { stream: true })
+    const parts = buf.split('\n')
+    buf = parts.pop() || ''
+    for (const p of parts) yield p
+  }
+  buf += dec.decode()
+  if (buf) yield buf
+}
+
+/** product fields the browser needs to put it into the quote even if it's not loaded on screen */
+function clientProduct(p: ToolEvent['product']) {
+  if (!p) return undefined
+  const { id, name, typeSlug, supplier, price, priceVat, unit, dimensions, imageUrl, productUrl, sku, note } = p
+  return { id, name, typeSlug, supplier, price, priceVat, unit, dimensions, imageUrl, productUrl, sku, note }
+}
+
+export function createChatHandler(env: Record<string, string | undefined>, data?: CatalogData) {
   // ── Ollama (local, on the VPS) ──
   const baseUrl = (env.OLLAMA_URL || 'http://ollama:11434').trim().replace(/\/+$/, '')
   const model = (env.OLLAMA_MODEL || 'qwen2.5:3b').trim()
-  const totalTimeout = Math.max(5_000, Number(env.OLLAMA_TIMEOUT_MS) || 150_000)
+  const totalTimeout = Math.max(5_000, Number(env.OLLAMA_TIMEOUT_MS) || 300_000)
   const numCtx = Number(env.OLLAMA_NUM_CTX) > 0 ? Math.max(2048, Math.min(32768, Number(env.OLLAMA_NUM_CTX))) : null
   const numThread = Number(env.OLLAMA_NUM_THREAD) > 0 ? Math.min(64, Math.floor(Number(env.OLLAMA_NUM_THREAD))) : null
   const options = numCtx || numThread ? { ...(numCtx ? { num_ctx: numCtx } : {}), ...(numThread ? { num_thread: numThread } : {}) } : undefined
@@ -235,6 +328,11 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   let groqListed: { at: number; ids: string[] } | null = null
   const limits = createGroqLimits(env)
   const lastProbe = new Map<string, number>()
+
+  // ── tools ──
+  const tools = createChatTools(data)
+  const groqTools = tools.available ? toolSet(env.GROQ_TOOLS, ALL_TOOLS) : []
+  const ollamaTools = tools.available ? toolSet(env.OLLAMA_TOOLS || 'off', OLLAMA_DEFAULT_TOOLS) : []
 
   /** Chat-capable models this key can use (cached 10 min). null = unknown (network). */
   async function groqDiscover(): Promise<string[] | null> {
@@ -326,6 +424,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     const models: ModelOption[] = list.map(({ usable, ...m }) => ({
       ...m,
       available: m.provider === 'ollama' ? ollamaOk : usable,
+      tools: (m.provider === 'groq' ? groqTools : ollamaTools).length > 0,
       limits: m.provider === 'groq' ? limits.snapshot(m.model) : null,
     }))
     const preferred = models.find((m) => m.id === 'groq:openai/gpt-oss-120b' && m.available)
@@ -341,21 +440,165 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     })
   }
 
-  function promptMessages(messages: ChatMessage[], context: string | null) {
+  function promptMessages(messages: ChatMessage[], context: string | null, withTools: boolean): Msg[] {
     const last = messages[messages.length - 1].content
-    // The static system prompt stays the exact same prefix → Ollama reuses its evaluated KV cache.
+    // The static system prompt (+ tools) stays the exact same prefix → Ollama / Groq reuse their prompt cache.
     // The screen context rides in the LAST user message, so earlier turns stay cacheable too.
     return [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: withTools ? SYSTEM_PROMPT : SYSTEM_PROMPT_BASIC },
       ...messages.slice(0, -1),
       { role: 'user', content: context ? withContext(context, last) : last },
     ]
   }
 
-  /** POST /api/chat — always answers with NDJSON lines `{"message":{"content":"…"}}`, last one `{"done":true}`. */
+  /** One Groq call (streamed). Text deltas go to onText right away; tool calls are collected. */
+  async function groqRound(m: string, msgs: Msg[], toolDefs: ToolDef[], forceText: boolean, signal: AbortSignal, onText: (t: string) => void, onFirst: () => void): Promise<Round> {
+    limits.noteRequest(m)
+    let r: Response
+    try {
+      r = await fetch(`${groqUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({
+          model: m,
+          stream: true,
+          stream_options: { include_usage: true },
+          max_completion_tokens: 450, // Groq counts this into the tokens/min estimate of every request (answers are short)
+          temperature: 0.3,
+          ...groqExtras(m),
+          messages: msgs,
+          ...(toolDefs.length ? { tools: toolDefs, tool_choice: forceText ? 'none' : 'auto' } : {}),
+        }),
+        signal,
+      })
+    } catch (err) {
+      if (signal.aborted) throw err
+      console.warn('[acc-db chat] Groq unreachable:', errText(err))
+      throw new UpstreamError(503, 'GroqCloud je teď nedostupný. Zkuste to za chvíli nebo přepněte na lokální model.')
+    }
+    limits.noteHeaders(m, r.headers)
+    if (!r.ok || !r.body) {
+      const text = await r.text().catch(() => '')
+      console.warn(`[acc-db chat] Groq HTTP ${r.status}: ${text.slice(0, 300)}`)
+      const st = r.status
+      if (st === 401 || st === 403) throw new UpstreamError(502, 'GroqCloud odmítl API klíč (neplatný nebo zablokovaný). Přepněte prosím na lokální model.')
+      if (st === 429) {
+        // retry-after header (s) or „try again in 510ms / 1.5s“ in the message
+        const m429 = text.match(/try again in ([\d.]+)(ms|s)/i)
+        const ra = Math.ceil(Number(r.headers.get('retry-after'))) || (m429 ? Math.ceil(Number(m429[1]) / (m429[2] === 'ms' ? 1000 : 1)) : null)
+        limits.note429(m, ra)
+        throw new UpstreamError(429, `GroqCloud: model ${GROQ_LABELS[m] || m} vyčerpal limit požadavků nebo tokenů${ra ? ` (znovu za ${ra} s)` : ''}. Zkuste to za chvíli nebo vyberte jiný model.`, ra)
+      }
+      if (st === 404) throw new UpstreamError(503, `Model ${m} teď v GroqCloud není dostupný. Vyberte prosím jiný.`)
+      if (st === 413) throw new UpstreamError(400, 'Dotaz je pro limit tohoto modelu příliš velký. Začněte novou konverzaci nebo vyberte jiný model.')
+      if (st === 400 && /tool_use_failed|tool call/i.test(text)) throw new UpstreamError(422, 'tool_use_failed')
+      throw new UpstreamError(502, 'GroqCloud vrátil chybu. Zkuste to prosím znovu nebo přepněte model.')
+    }
+    const calls: { id: string; name: string; args: string }[] = []
+    let text = ''
+    for await (const raw of lines(r.body, onFirst)) {
+      const l = raw.trim()
+      if (!l.startsWith('data:')) continue
+      const d = l.slice(5).trim()
+      if (d === '[DONE]') break
+      let o: {
+        choices?: { delta?: { content?: string; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[]
+        usage?: { total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
+        x_groq?: { usage?: { total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }
+        error?: { message?: string }
+      }
+      try {
+        o = JSON.parse(d)
+      } catch {
+        continue
+      }
+      if (o.error) {
+        console.warn('[acc-db chat] Groq stream error:', o.error.message)
+        if (/tool/i.test(o.error.message || '')) throw new UpstreamError(422, 'tool_use_failed')
+        throw new UpstreamError(502, 'GroqCloud přerušil odpověď. Zkuste to prosím znovu.')
+      }
+      const delta = o.choices?.[0]?.delta
+      if (delta?.content) {
+        text += delta.content
+        onText(delta.content)
+      }
+      for (const tc of delta?.tool_calls || []) {
+        const i = tc.index ?? calls.length
+        calls[i] ||= { id: '', name: '', args: '' }
+        if (tc.id) calls[i].id = tc.id
+        if (tc.function?.name) calls[i].name += tc.function.name
+        if (tc.function?.arguments) calls[i].args += tc.function.arguments
+      }
+      const usage = o.usage || o.x_groq?.usage
+      if (usage?.total_tokens) limits.noteUsage(m, usage.total_tokens, usage.prompt_tokens_details?.cached_tokens || 0)
+    }
+    return {
+      text,
+      calls: calls.filter(Boolean).map((c, i) => ({ id: c.id || `call_${i}`, name: c.name, ...parseArgs(c.args) })),
+    }
+  }
+
+  /** One Ollama call (streamed NDJSON). */
+  async function ollamaRound(msgs: Msg[], toolDefs: ToolDef[], signal: AbortSignal, onText: (t: string) => void, onFirst: () => void): Promise<Round> {
+    let r: Response
+    try {
+      r = await fetch(`${baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, stream: true, ...keep, ...(options ? { options } : {}), messages: msgs, ...(toolDefs.length ? { tools: toolDefs } : {}) }),
+        signal,
+      })
+    } catch (err) {
+      if (signal.aborted) throw err
+      console.warn('[acc-db chat] Ollama unreachable:', errText(err))
+      throw new UpstreamError(503, MSG_UNAVAILABLE)
+    }
+    if (!r.ok || !r.body) {
+      const text = await r.text().catch(() => '')
+      console.warn(`[acc-db chat] Ollama HTTP ${r.status}: ${text.slice(0, 200)}`)
+      if (r.status === 404) throw new UpstreamError(503, `Kapitán Karel zatím není dostupný (model ${model} na serveru chybí).`)
+      if (r.status === 400 && /tools/i.test(text)) throw new UpstreamError(422, 'tool_use_failed')
+      throw new UpstreamError(502, 'Kapitán Karel narazil na chybu. Zkuste to prosím znovu.')
+    }
+    let text = ''
+    const calls: ToolCall[] = []
+    for await (const raw of lines(r.body, onFirst)) {
+      if (!raw.trim()) continue
+      let o: { message?: { content?: string; tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] }; error?: string; done?: boolean }
+      try {
+        o = JSON.parse(raw)
+      } catch {
+        continue
+      }
+      if (o.error) {
+        console.warn('[acc-db chat] Ollama stream error:', o.error)
+        throw new UpstreamError(502, 'Kapitán Karel narazil na chybu. Zkuste to prosím znovu.')
+      }
+      const c = o.message?.content
+      if (c) {
+        text += c
+        onText(c)
+      }
+      for (const tc of o.message?.tool_calls || []) {
+        if (tc.function?.name) calls.push({ id: tc.id || `call_${calls.length}`, name: tc.function.name, ...parseArgs(tc.function.arguments) })
+      }
+      if (o.done) break
+    }
+    return { text, calls }
+  }
+
+  /** POST /api/chat — NDJSON stream of events:
+   *   {"message":{"content":"…"}}            text delta (same shape as before / as Ollama)
+   *   {"type":"status","text":"Hledám…"}      tool progress
+   *   {"type":"action",name,args,label,…}     action for the browser (quote / navigation)
+   *   {"type":"limits",model,limits}          fresh Groq rate-limit state
+   *   {"error":"…","retryAfter":n,"done":true}  error (in-band once streaming started)
+   *   {"done":true,"model":"…"}               end
+   *  Errors before any output are plain JSON with an HTTP status (400/429/502/503/504). */
   async function chat(req: IncomingMessage, res: ServerResponse) {
     let messages: ChatMessage[]
     let context: string | null
+    let quote: Map<string, number>
     let choice: ModelChoice
     try {
       const raw = await readBody(req, MAX_BODY_BYTES)
@@ -367,6 +610,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
       }
       messages = validateMessages(body)
       context = validateContext(body)
+      quote = validateQuote(body)
       const list = await modelList()
       const wanted = (body as { model?: unknown }).model
       if (wanted !== undefined && wanted !== null && wanted !== '') {
@@ -385,18 +629,15 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     if (isGroq) {
       let wait = limits.blockedFor(choice.model)
       if (wait > 0 && wait <= 5) {
-        await new Promise((r) => setTimeout(r, wait * 1000 + 200)) // tokens/min window almost refilled
+        await new Promise((r) => setTimeout(r, wait * 1000 + 200)) // tokens/min window almost reset
         wait = 0
       }
       if (wait > 0) {
         res.setHeader('Retry-After', String(wait))
-        return sendJson(res, 429, {
-          error: `GroqCloud: model ${GROQ_LABELS[choice.model] || choice.model} má vyčerpaný limit (znovu za ${wait} s). Vyberte prosím jiný model.`,
-          retryAfter: wait,
-          limits: limits.snapshot(choice.model),
-        })
+        return sendJson(res, 429, { error: `GroqCloud: model ${GROQ_LABELS[choice.model] || choice.model} má vyčerpaný limit (znovu za ${wait} s). Vyberte prosím jiný model.`, retryAfter: wait })
       }
     }
+
     const ctrl = new AbortController()
     let timedOut = false
     const total = setTimeout(
@@ -406,28 +647,15 @@ export function createChatHandler(env: Record<string, string | undefined>) {
       },
       isGroq ? groqTimeout : totalTimeout,
     )
-    let firstByte: ReturnType<typeof setTimeout> | undefined = setTimeout(
-      () => {
-        timedOut = true
-        ctrl.abort()
-      },
-      isGroq ? 30_000 : FIRST_BYTE_TIMEOUT_MS,
-    )
-    const clearFirst = () => {
-      if (firstByte) clearTimeout(firstByte)
-      firstByte = undefined
-    }
-    // browser closed the panel / navigated away → stop generating
     const onClose = () => {
       if (!res.writableEnded) ctrl.abort()
     }
     res.on('close', onClose)
 
     const startStream = () => {
+      if (res.headersSent) return
       res.statusCode = 200
-      // unbuffered streaming: no proxy buffering / transformation (compression), each line flushed at once.
-      // (vite preview's compression middleware runs after this handler, so it never wraps the stream;
-      // the Traefik router for acc-db has no compress middleware.)
+      // unbuffered streaming: no proxy buffering / transformation (compression), each line flushed at once
       res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
       res.setHeader('Cache-Control', 'no-cache, no-store, no-transform')
       res.setHeader('X-Accel-Buffering', 'no')
@@ -438,164 +666,153 @@ export function createChatHandler(env: Record<string, string | undefined>) {
       res.flushHeaders()
     }
     const line = (o: unknown) => {
+      startStream()
       if (!res.destroyed) res.write(JSON.stringify(o) + '\n')
     }
-    const brokenMsg = () => (timedOut ? 'Odpověď trvala příliš dlouho a byla přerušena.' : 'Spojení s Kapitánem Karlem bylo přerušeno.')
+    const sendLimits = () => {
+      if (isGroq) line({ type: 'limits', model: choice.id, limits: limits.snapshot(choice.model) })
+    }
 
-    const groqFetch = async () => {
-      limits.noteRequest(choice.model)
-      const r = await fetch(`${groqUrl}/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
-        body: JSON.stringify({
-          model: choice.model,
-          stream: true,
-          stream_options: { include_usage: true }, // → usage in the last chunk (local tokens/day counter)
-          max_completion_tokens: 700, // Groq counts this into the tokens/min estimate of the request
-          temperature: 0.4,
-          ...groqExtras(choice.model),
-          messages: promptMessages(messages, context),
-        }),
-        signal: ctrl.signal,
+    const toolDefs = isGroq ? groqTools : ollamaTools
+    let convo = promptMessages(messages, context, toolDefs.length > 0)
+    let anyText = false
+    let actions = 0
+    const done = new Set<string>()
+    const onText = (t: string) => {
+      anyText = true
+      line({ message: { role: 'assistant', content: t }, done: false })
+    }
+
+    /** Groq: a short tokens/min wait (a few seconds) is waited out instead of failing the whole answer */
+    const SHORT_WAIT_S = 25 // mid-answer (actions may already be done) → rather wait than fail
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve, reject) => {
+        const t = setTimeout(resolve, ms)
+        ctrl.signal.addEventListener('abort', () => (clearTimeout(t), reject(new Error('aborted'))), { once: true })
       })
-      limits.noteHeaders(choice.model, r.headers)
-      return r
-    }
-    /** retry-after header (s) or „try again in 510ms / 1.5s“ in the 429 message */
-    const retryAfterOf = (r: Response, text: string) => {
-      const m = text.match(/try again in ([\d.]+)(ms|s)/i)
-      return Math.ceil(Number(r.headers.get('retry-after'))) || (m ? Math.ceil(Number(m[1]) / (m[2] === 'ms' ? 1000 : 1)) : null)
+    const round = async (defs: ToolDef[], forceText: boolean): Promise<Round> => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await round1(defs, forceText)
+        } catch (err) {
+          if (!(isGroq && err instanceof UpstreamError && err.status === 429 && err.retryAfter && err.retryAfter <= SHORT_WAIT_S && attempt < 2)) throw err
+          line({ type: 'status', text: `Čekám na limit GroqCloud (${err.retryAfter} s)…` })
+          await sleep(err.retryAfter * 1000 + 300)
+        }
+      }
     }
 
+    /** one model round with its own first-byte timeout (model load / prompt evaluation) */
+    const round1 = async (defs: ToolDef[], forceText: boolean): Promise<Round> => {
+      const rc = new AbortController()
+      const abort = () => rc.abort()
+      ctrl.signal.addEventListener('abort', abort)
+      let first: ReturnType<typeof setTimeout> | undefined = setTimeout(
+        () => {
+          timedOut = true
+          rc.abort()
+        },
+        isGroq ? 30_000 : FIRST_BYTE_TIMEOUT_MS,
+      )
+      const onFirst = () => {
+        if (first) clearTimeout(first)
+        first = undefined
+      }
+      try {
+        return isGroq ? await groqRound(choice.model, convo, defs, forceText, rc.signal, onText, onFirst) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
+      } finally {
+        onFirst()
+        ctrl.signal.removeEventListener('abort', abort)
+      }
+    }
+
+    // local model: prompt evaluation on the CPU takes seconds → show progress early (after connection errors had their chance)
+    const early = isGroq ? undefined : setTimeout(() => !res.headersSent && line({ type: 'status', text: 'Čtu dotaz…' }), 1200)
     try {
-      let upstream: Response
-      try {
-        upstream = isGroq
-          ? await groqFetch()
-          : await fetch(`${baseUrl}/api/chat`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model, stream: true, ...keep, ...(options ? { options } : {}), messages: promptMessages(messages, context) }),
-              signal: ctrl.signal,
-            })
-      } catch (err) {
-        if (res.destroyed) return
-        console.warn(`[acc-db chat] ${isGroq ? 'Groq' : 'Ollama'} unreachable:`, errText(err))
-        if (timedOut) return sendJson(res, 504, { error: 'Kapitán Karel neodpověděl včas. Zkuste to prosím znovu.' })
-        return sendJson(res, 503, {
-          error: isGroq ? 'GroqCloud je teď nedostupný. Zkuste to za chvíli nebo přepněte na lokální model.' : MSG_UNAVAILABLE,
-        })
-      }
-
-      // a short tokens/min wait (≤ 12 s) is waited out instead of failing (max 2×)
-      for (let attempt = 0; isGroq && upstream.status === 429 && attempt < 2; attempt++) {
-        const ra = retryAfterOf(upstream, await upstream.clone().text().catch(() => ''))
-        if (!ra || ra > 12) break
-        await upstream.body?.cancel().catch(() => {})
-        await new Promise((r) => setTimeout(r, ra * 1000 + 300))
-        if (res.destroyed || ctrl.signal.aborted) return
-        upstream = await groqFetch().catch(() => upstream)
-      }
-
-      if (!upstream.ok || !upstream.body) {
-        const text = await upstream.text().catch(() => '')
-        clearFirst()
-        console.warn(`[acc-db chat] ${isGroq ? 'Groq' : 'Ollama'} HTTP ${upstream.status}: ${text.slice(0, 200)}`)
-        if (isGroq) {
-          const st = upstream.status
-          if (st === 401 || st === 403) return sendJson(res, 502, { error: 'GroqCloud odmítl API klíč (neplatný nebo zablokovaný). Přepněte prosím na lokální model.' })
-          if (st === 429) {
-            const ra = retryAfterOf(upstream, text)
-            limits.note429(choice.model, ra)
-            if (ra) res.setHeader('Retry-After', String(ra))
-            return sendJson(res, 429, {
-              error: `GroqCloud: model ${GROQ_LABELS[choice.model] || choice.model} vyčerpal limit požadavků nebo tokenů${ra ? ` (znovu za ${ra} s)` : ''}. Zkuste to za chvíli nebo vyberte jiný model.`,
-              ...(ra ? { retryAfter: ra } : {}),
-              limits: limits.snapshot(choice.model),
-            })
+      let defs = toolDefs
+      for (let i = 0; i < MAX_ROUNDS; i++) {
+        const last = i === MAX_ROUNDS - 1
+        let r: Round
+        try {
+          r = await round(defs, last && defs.length > 0)
+        } catch (err) {
+          // the model produced a malformed tool call → retry this round once without tools
+          if (err instanceof UpstreamError && err.status === 422 && defs.length) {
+            console.warn(`[acc-db chat] ${choice.id}: tool call failed, retrying without tools`)
+            defs = []
+            i--
+            continue
           }
-          if (st === 404) return sendJson(res, 503, { error: `Model ${choice.model} teď v GroqCloud není dostupný. Vyberte prosím jiný.` })
-          if (st === 413) return sendJson(res, 400, { error: 'Konverzace je pro GroqCloud příliš dlouhá. Začněte prosím novou konverzaci.' })
-          return sendJson(res, 502, { error: 'GroqCloud vrátil chybu. Zkuste to prosím znovu nebo přepněte model.' })
+          throw err
         }
-        if (upstream.status === 404) {
-          return sendJson(res, 503, { error: `Kapitán Karel zatím není dostupný (model ${model} na serveru chybí).` })
-        }
-        return sendJson(res, 502, { error: 'Kapitán Karel narazil na chybu. Zkuste to prosím znovu.' })
-      }
-
-      startStream()
-      const reader = upstream.body.getReader()
-      try {
-        if (!isGroq) {
-          // Ollama already speaks NDJSON with message.content → pass through unchanged
-          for (;;) {
-            const { done, value } = await reader.read()
-            if (done) break
-            clearFirst()
-            if (res.destroyed) break
-            res.write(value)
-          }
-        } else {
-          // Groq: SSE `data: {choices:[{delta:{content}}]}` … `data: [DONE]` → NDJSON
-          const dec = new TextDecoder()
-          let buf = ''
-          let finished = false
-          const handle = (raw: string) => {
-            const l = raw.trim()
-            if (!l.startsWith('data:')) return
-            const data = l.slice(5).trim()
-            if (data === '[DONE]') {
-              finished = true
-              return
-            }
-            type Usage = { total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
-            let o: { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string }; usage?: Usage; x_groq?: { usage?: Usage } }
+        if (!r.calls.length || !defs.length) break
+        convo = [
+          ...convo,
+          isGroq
+            ? { role: 'assistant', content: r.text || null, tool_calls: r.calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.rawArgs } })) }
+            : { role: 'assistant', content: r.text, tool_calls: r.calls.map((c) => ({ function: { name: c.name, arguments: c.args } })) },
+        ]
+        for (const c of r.calls) {
+          line({ type: 'status', text: TOOL_STATUS[c.name] || 'Pracuji…' })
+          const key = `${c.name}:${JSON.stringify(c.args)}`
+          let result: Record<string, unknown>
+          if (c.bad) result = { chyba: 'Neplatné argumenty (očekáván JSON objekt).' }
+          else if (!defs.some((d) => d.function.name === c.name)) result = { chyba: `Nástroj ${c.name} není k dispozici.` }
+          else if (done.has(key) && !['hledat_produkty', 'detail_produktu', 'seznam_kategorii', 'stav_nabidky'].includes(c.name)) result = { provedeno: true, poznamka: 'Tato akce už byla provedena, neopakuj ji.' }
+          else {
+            done.add(key)
             try {
-              o = JSON.parse(data)
-            } catch {
-              return
+              result = await tools.run(c.name, c.args, quote, (e) => {
+                actions++
+                line({ ...e, product: clientProduct(e.product) })
+              })
+            } catch (err) {
+              console.warn(`[acc-db chat] tool ${c.name} failed:`, errText(err))
+              result = { chyba: 'Katalog je teď nedostupný.' }
             }
-            if (o.error) {
-              console.warn('[acc-db chat] Groq stream error:', o.error.message)
-              line({ error: 'GroqCloud přerušil odpověď. Zkuste to prosím znovu.', done: true })
-              finished = true
-              return
-            }
-            const usage = o.usage || o.x_groq?.usage
-            if (usage?.total_tokens) limits.noteUsage(choice.model, usage.total_tokens, usage.prompt_tokens_details?.cached_tokens || 0)
-            const c = o.choices?.[0]?.delta?.content
-            if (c) line({ message: { role: 'assistant', content: c }, done: false })
           }
-          for (;;) {
-            const { done, value } = await reader.read()
-            if (done) break
-            clearFirst()
-            if (res.destroyed) break
-            buf += dec.decode(value, { stream: true })
-            const parts = buf.split('\n')
-            buf = parts.pop() || ''
-            for (const p of parts) handle(p)
-            if (finished) break
-          }
-          if (buf) handle(buf)
-          line({ type: 'limits', model: choice.id, limits: limits.snapshot(choice.model) })
-          line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id })
+          console.log(`[acc-db chat] ${choice.id} tool ${c.name}(${JSON.stringify(c.args).slice(0, 160)}) → ${JSON.stringify(result).slice(0, 120)}`)
+          convo.push(
+            isGroq ? { role: 'tool', tool_call_id: c.id, content: JSON.stringify(result) } : { role: 'tool', content: JSON.stringify(result), tool_name: c.name },
+          )
         }
-      } catch {
-        // aborted (timeout / client gone) or upstream broke mid-answer → tell the client in-band
-        if (!res.destroyed) res.write('\n' + JSON.stringify({ error: brokenMsg(), done: true }) + '\n')
       }
+      if (!anyText) onText(actions ? 'Hotovo.' : 'Promiňte, odpověď se nepodařilo dokončit. Zkuste to prosím znovu.')
+      sendLimits()
+      line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id })
       if (!res.destroyed) res.end()
+    } catch (err) {
+      if (res.destroyed) return
+      let status = 502
+      let msg = 'Kapitán Karel narazil na chybu. Zkuste to prosím znovu.'
+      let retryAfter: number | null = null
+      if (err instanceof UpstreamError) {
+        status = err.status === 422 ? 502 : err.status
+        msg = err.status === 422 ? 'Model nezvládl použít nástroje. Zkuste to prosím znovu nebo vyberte jiný model.' : err.message
+        retryAfter = err.retryAfter
+      } else if (timedOut) {
+        status = 504
+        msg = 'Kapitán Karel neodpověděl včas. Zkuste to prosím znovu.'
+      } else {
+        console.warn('[acc-db chat] failed:', errText(err))
+        msg = 'Spojení s Kapitánem Karlem bylo přerušeno.'
+      }
+      if (!res.headersSent) {
+        if (retryAfter) res.setHeader('Retry-After', String(retryAfter))
+        return sendJson(res, status, { error: msg, ...(retryAfter ? { retryAfter } : {}), ...(isGroq ? { limits: limits.snapshot(choice.model) } : {}) })
+      }
+      sendLimits()
+      line({ error: msg, ...(retryAfter ? { retryAfter } : {}), done: true })
+      res.end()
     } finally {
       clearTimeout(total)
-      clearFirst()
+      clearTimeout(early)
       res.off('close', onClose)
     }
   }
 
-  /** Pre-evaluate the (long, static) system prompt once at server start, so the first real question
-   *  to the local model doesn't pay ~40 s of CPU prompt evaluation. Best effort, errors ignored. */
+  /** Pre-evaluate the (long, static) system prompt + tool definitions once at server start, so the first
+   *  real question to the local model doesn't pay ~1 min of CPU prompt evaluation. Best effort. */
   function warmup() {
     if ((env.OLLAMA_WARMUP || '').toLowerCase() === 'off') return
     const t = setTimeout(async () => {
@@ -610,9 +827,10 @@ export function createChatHandler(env: Record<string, string | undefined>) {
             ...keep,
             options: { ...(options || {}), num_predict: 1 },
             messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'system', content: ollamaTools.length ? SYSTEM_PROMPT : SYSTEM_PROMPT_BASIC },
               { role: 'user', content: 'Ahoj' },
             ],
+            ...(ollamaTools.length ? { tools: ollamaTools } : {}),
           }),
           signal: AbortSignal.timeout(300_000),
         })
@@ -629,6 +847,14 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     chat,
     status,
     warmup,
-    config: { baseUrl, model, numCtx, numThread, keepAlive, groq: groqKey ? { url: groqUrl, models: groqOverride.length ? groqOverride : 'auto' } : null },
+    config: {
+      baseUrl,
+      model,
+      numCtx,
+      numThread,
+      keepAlive,
+      groq: groqKey ? { url: groqUrl, models: groqOverride.length ? groqOverride : 'auto' } : null,
+      tools: { groq: groqTools.map((t) => t.function.name), ollama: ollamaTools.map((t) => t.function.name) },
+    },
   }
 }
