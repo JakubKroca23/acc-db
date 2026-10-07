@@ -158,7 +158,7 @@ const ASSISTANT_CLIP = 500
 const TOOL_INTENT = /najd|naj[ií]t|hled|vyhled|p[řr][ií]d|odeb|odstra|sma[žz]|zm[ěe]n|uprav|otev[řr]|uka[žz]|zobraz|filtr|kategor|cen[auyěo]?\b|cenov|kolik|stoj[ií]|levn|drah|nab[ií]d|produkt|zbo[žz]|polo[žz]k|katalog|dodavatel|alsap|hydrotruck|trans.?technik|blatn|z[áa]bran|z[áa]st[ěe]r|box|maj[áa]k|dr[žz][áa]k|rezerv|hasic|[čc]erpad|kamer|sv[ěe]tl|n[áa]dob|kanystr|olej|n[áa]dr[žz]|z[áa]suv|nosi[čc]|dopra|doru[čc]|mno[žz]stv|kus|\bks\b|k[čc]\b|\d/i
 
 /** message refers to what the user sees right now (screen, open product, quote) */
-const SCREEN_REF = /nab[ií]d|ko[šs][ií]k|\btady\b|\bzde\b|\bto(m|hle|to)?\b|\bten(to|hle)?\b|\bta(to|hle)?\b|\btu(to|hle)?\b|otev[řr]en|obrazovc|vybran|kolik m[áa]m|celkem|tento produkt|str[áa]nk|vid[íi]m/i
+const SCREEN_REF = /nab[ií]d|ko[šs][ií]k|\btady\b|\bzde\b|\bto(hle|to)\b|\bten(to|hle)\b|\bta(to|hle)\b|\btu(to|hle)\b|otev[řr]en|obrazovc|vybran|kolik m[áa]m|celkem|tento produkt|str[áa]nk|vid[íi]m/i
 
 export function wantsTools(messages: ChatMessage[]): boolean {
   const last = messages[messages.length - 1].content
