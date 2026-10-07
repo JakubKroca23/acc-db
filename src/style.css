@@ -13,10 +13,14 @@
   --brand-blue-hover: #0083e6;
   --brand-blue-muted: #e6f4ff;
   --brand-blue-ink: #0060a8;
-  /* „v nabídce“ highlight in the category nav (amber, distinct from the blue active state) */
-  --quote-hl: #fbbf24;
-  --quote-hl-bg: rgba(251, 191, 36, 0.1);
-  --quote-hl-ink: #fde68a;
+  /* „v nabídce“ highlight in the category nav: indigo — clearly a different blue than the
+     active brand blue #0091ff and than the Trans-Technik supplier blue #1e4fd8 (light pill badge) */
+  --quote-hl: #818cf8; /* indigo-400: accents/dots/edges on the dark sidebar */
+  --quote-hl-bg: rgba(99, 102, 241, 0.2);
+  --quote-hl-ink: #c7d2fe; /* indigo-200 label text */
+  --quote-badge-bg: #4f46e5; /* indigo-600, white text 6.3:1 */
+  --quote-badge-ring: #a5b4fc;
+  --quote-hl-deep: #312e81; /* indigo-900: ring on the solid-blue active chip (mobile) */
   --background: #e4e4e7;
   --foreground: #18181b;
   --card: #ffffff;
@@ -1540,7 +1544,7 @@ textarea:focus {
 }
 
 /* ── nav: categories that have products in the quote ───────────────
- * Amber = „v nabídce“ (blue stays reserved for the ACTIVE item), never colour-only:
+ * Indigo = „v nabídce“ (blue stays reserved for the ACTIVE item), never colour-only:
  * each such item carries a count badge + screen-reader text / title. */
 .sr-only {
   position: absolute;
@@ -1573,11 +1577,11 @@ textarea:focus {
 }
 
 .nav-item.in-quote:hover {
-  background: rgba(251, 191, 36, 0.18);
+  background: rgba(99, 102, 241, 0.26);
   color: #fff;
 }
 
-/* active + in quote: active blue background/accent wins, amber badge stays */
+/* active + in quote: active blue background/accent wins, indigo edge + badge stay */
 .nav-item.active.in-quote {
   background: rgba(0, 145, 255, 0.2);
   border-left-color: var(--brand-blue);
@@ -1591,8 +1595,9 @@ textarea:focus {
   height: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--quote-hl);
-  color: #1c1917;
+  background: var(--quote-badge-bg);
+  color: #fff;
+  box-shadow: 0 0 0 1px var(--quote-badge-ring);
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -1606,7 +1611,7 @@ textarea:focus {
   height: 7px;
   border-radius: 50%;
   background: var(--quote-hl);
-  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.22);
+  box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.25);
 }
 
 .nav-group-title.has-quote {
@@ -1623,12 +1628,12 @@ textarea:focus {
 @media (max-width: 860px) {
   .nav-item.in-quote {
     background: var(--quote-hl-bg);
-    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.6);
+    box-shadow: inset 0 0 0 1px rgba(129, 140, 248, 0.75);
     border-radius: 999px;
   }
   .nav-item.active.in-quote {
     background: var(--brand-blue);
-    box-shadow: inset 0 0 0 2px var(--quote-hl);
+    box-shadow: inset 0 0 0 2px var(--quote-hl-deep);
     border-radius: 999px;
   }
   .nav-item .nav-label {
