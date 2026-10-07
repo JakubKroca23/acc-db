@@ -13,6 +13,10 @@
   --brand-blue-hover: #0083e6;
   --brand-blue-muted: #e6f4ff;
   --brand-blue-ink: #0060a8;
+  /* „v nabídce“ highlight in the category nav (amber, distinct from the blue active state) */
+  --quote-hl: #fbbf24;
+  --quote-hl-bg: rgba(251, 191, 36, 0.1);
+  --quote-hl-ink: #fde68a;
   --background: #e4e4e7;
   --foreground: #18181b;
   --card: #ffffff;
@@ -1532,6 +1536,106 @@ textarea:focus {
     border-top: 1px solid #d4d4d8;
     font-size: 9.5px;
     color: #71717a;
+  }
+}
+
+/* ── nav: categories that have products in the quote ───────────────
+ * Amber = „v nabídce“ (blue stays reserved for the ACTIVE item), never colour-only:
+ * each such item carries a count badge + screen-reader text / title. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.nav-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.nav-item {
+  position: relative; /* contains the .sr-only text (no page overflow from the scrolling chip strip) */
+  gap: 6px;
+}
+
+.nav-item.in-quote {
+  color: var(--quote-hl-ink);
+  background: var(--quote-hl-bg);
+  border-left-color: var(--quote-hl);
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.nav-item.in-quote:hover {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fff;
+}
+
+/* active + in quote: active blue background/accent wins, amber badge stays */
+.nav-item.active.in-quote {
+  background: rgba(0, 145, 255, 0.2);
+  border-left-color: var(--brand-blue);
+  color: #fff;
+  box-shadow: inset -3px 0 0 var(--quote-hl);
+}
+
+.nav-q {
+  flex-shrink: 0;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--quote-hl);
+  color: #1c1917;
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: center;
+}
+
+.nav-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--quote-hl);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.22);
+}
+
+.nav-group-title.has-quote {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-group-title .nav-dot {
+  width: 6px;
+  height: 6px;
+}
+
+@media (max-width: 860px) {
+  .nav-item.in-quote {
+    background: var(--quote-hl-bg);
+    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.6);
+    border-radius: 999px;
+  }
+  .nav-item.active.in-quote {
+    background: var(--brand-blue);
+    box-shadow: inset 0 0 0 2px var(--quote-hl);
+    border-radius: 999px;
+  }
+  .nav-item .nav-label {
+    flex: 0 1 auto;
+  }
+  .nav-group-title.has-quote {
+    display: none;
   }
 }
 

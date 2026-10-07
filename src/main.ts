@@ -531,7 +531,35 @@ function thumbHtml(p: Product, cls = 'thumb-img'): string {
 }
 
 // ── render helpers ────────────────────────────────────────────────
+function itemsWord(n: number): string {
+  return n === 1 ? 'položka' : n >= 2 && n <= 4 ? 'položky' : 'položek'
+}
+
+/** Per category (type slug): distinct items + pieces currently in the quote. */
+function quoteCountsByType(): Map<string, { items: number; pcs: number }> {
+  const m = new Map<string, { items: number; pcs: number }>()
+  for (const [id, qty] of Object.entries(cart)) {
+    const p = productsById.get(id)
+    if (!p || !qty) continue
+    const c = m.get(p.typeSlug) || { items: 0, pcs: 0 }
+    c.items += 1
+    c.pcs += qty
+    m.set(p.typeSlug, c)
+  }
+  return m
+}
+
+/** Badge + screen-reader text for a nav item that has products in the quote (not colour-only). */
+function navQuoteBadge(c: { items: number; pcs: number } | undefined): string {
+  if (!c) return ''
+  const label = `${c.items} ${itemsWord(c.items)} v nabídce (${c.pcs} ks)`
+  return `<span class="nav-q" aria-hidden="true" title="${escapeAttr(label)}">${c.items}</span><span class="sr-only">, ${escapeHtml(label)}</span>`
+}
+
 function navHtml(): string {
+  const qc = quoteCountsByType()
+  const quoteTitle = (c: { items: number; pcs: number } | undefined) =>
+    c ? `title="${escapeAttr(`${c.items} ${itemsWord(c.items)} v nabídce (${c.pcs} ks)`)}"` : ''
   const cats = [...new Set(types.map((t) => t.category))]
   const order = ['Podvozek', 'Všechny nástavby', 'Hákový nosič kontejneru', 'Ostatní']
   const sorted = [...cats].sort((a, b) => {
@@ -542,10 +570,12 @@ function navHtml(): string {
 
   const allActive = selectedSlug === ALL_SLUG && viewMode === 'browse'
   const total = stats?.products ?? 0
+  let allQ: { items: number; pcs: number } | undefined
+  for (const c of qc.values()) allQ = { items: (allQ?.items || 0) + c.items, pcs: (allQ?.pcs || 0) + c.pcs }
   const allBtn = `
     <div class="nav-group nav-group-all">
-      <button type="button" class="nav-item nav-all ${allActive ? 'active' : ''}" data-type="${ALL_SLUG}" ${allActive ? 'aria-current="page"' : ''}>
-        <span>Vše</span>${total ? `<span class="nav-count">${total}</span>` : ''}
+      <button type="button" class="nav-item nav-all ${allActive ? 'active' : ''} ${allQ ? 'in-quote' : ''}" data-type="${ALL_SLUG}" ${allActive ? 'aria-current="page"' : ''} ${quoteTitle(allQ)}>
+        <span class="nav-label">Vše</span>${navQuoteBadge(allQ)}${total ? `<span class="nav-count" title="${total} produktů v katalogu">${total}</span>` : ''}
       </button>
     </div>`
   return allBtn + sorted
@@ -553,24 +583,34 @@ function navHtml(): string {
       const roots = types
         .filter((t) => t.category === cat && (!t.parentSlug || !types.some((x) => x.slug === t.parentSlug)))
         .sort((a, b) => a.sortOrder - b.sortOrder)
+      const groupHasQuote = types.some((t) => t.category === cat && qc.has(t.slug))
       return `
         <div class="nav-group">
-          <div class="nav-group-title">${escapeHtml(cat)}</div>
+          <div class="nav-group-title ${groupHasQuote ? 'has-quote' : ''}">${escapeHtml(cat)}${
+            groupHasQuote ? `<span class="nav-dot" aria-hidden="true" title="Obsahuje položky z nabídky"></span>` : ''
+          }</div>
           ${roots
             .map((t) => {
               const children = types
                 .filter((c) => c.parentSlug === t.slug)
                 .sort((a, b) => a.sortOrder - b.sortOrder)
               const active = selectedSlug === t.slug && viewMode === 'browse'
+              const q = qc.get(t.slug)
+              const childQ = !q && children.some((c) => qc.has(c.slug))
               return `
-                <button type="button" class="nav-item ${active ? 'active' : ''}" data-type="${escapeAttr(t.slug)}" ${active ? 'aria-current="page"' : ''}>
-                  <span>${escapeHtml(t.name)}</span>
+                <button type="button" class="nav-item ${active ? 'active' : ''} ${q ? 'in-quote' : ''} ${childQ ? 'child-in-quote' : ''}" data-type="${escapeAttr(t.slug)}" ${active ? 'aria-current="page"' : ''} ${
+                  q ? quoteTitle(q) : childQ ? 'title="Podkategorie obsahuje položky z nabídky"' : ''
+                }>
+                  <span class="nav-label">${escapeHtml(t.name)}</span>${navQuoteBadge(q)}${
+                    childQ ? `<span class="nav-dot" aria-hidden="true"></span><span class="sr-only">, podkategorie obsahuje položky z nabídky</span>` : ''
+                  }
                 </button>
                 ${children
                   .map((c) => {
                     const cActive = selectedSlug === c.slug && viewMode === 'browse'
-                    return `<button type="button" class="nav-item nested ${cActive ? 'active' : ''}" data-type="${escapeAttr(c.slug)}" ${cActive ? 'aria-current="page"' : ''}>
-                      <span>${escapeHtml(c.name)}</span>
+                    const cq = qc.get(c.slug)
+                    return `<button type="button" class="nav-item nested ${cActive ? 'active' : ''} ${cq ? 'in-quote' : ''}" data-type="${escapeAttr(c.slug)}" ${cActive ? 'aria-current="page"' : ''} ${quoteTitle(cq)}>
+                      <span class="nav-label">${escapeHtml(c.name)}</span>${navQuoteBadge(cq)}
                     </button>`
                   })
                   .join('')}
@@ -885,9 +925,8 @@ function renderHeaderActions() {
   const totalVat = lines.reduce((a, l) => a + l.lineVat, 0) + shipping.reduce((a, s) => a + s.shippingVat, 0)
   const pieces = cartCount()
   const n = lines.length
-  const itemsWord = n === 1 ? 'položka' : n >= 2 && n <= 4 ? 'položky' : 'položek'
   const title = n
-    ? `Cenová nabídka: ${n} ${itemsWord} (${pieces} ks) · celkem ${formatCzkExact(totalEx)} bez DPH / ${formatCzkExact(totalVat)} s DPH (vč. dopravy)`
+    ? `Cenová nabídka: ${n} ${itemsWord(n)} (${pieces} ks) · celkem ${formatCzkExact(totalEx)} bez DPH / ${formatCzkExact(totalVat)} s DPH (vč. dopravy)`
     : 'Cenová nabídka je zatím prázdná'
   region('header-actions').innerHTML = `
     <button type="button" class="quote-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" ${viewMode === 'quote' ? 'aria-current="page"' : ''}>

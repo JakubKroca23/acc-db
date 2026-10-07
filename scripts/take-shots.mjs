@@ -100,6 +100,38 @@ for (const sup of ['sup-tt', 'sup-alsap']) {
 }
 await page.waitForTimeout(300)
 
+// nav highlight for categories with products in the quote: a child-only category (parent gets a dot),
+// another group, then back to „Blatníky“ = active + in quote
+for (const slug of ['drzaky-boxu', 'kamery']) {
+  await openCategory(slug)
+  await addFirst(1)
+}
+await openCategory('blatniky')
+const navState = () =>
+  page.evaluate(() =>
+    [...document.querySelectorAll('.nav-item.in-quote, .nav-item.child-in-quote, .nav-group-title.has-quote')].map((el) =>
+      [el.textContent.trim().replace(/\s+/g, ' '), el.className.replace(/\s+/g, ' ').trim(), el.getAttribute('title') || ''].join(' | '),
+    ),
+  )
+console.log('nav in-quote', JSON.stringify(await navState(), null, 1))
+await page.evaluate(() => (document.querySelector('.nav').scrollTop = 0))
+await shot(page, '02b-nav-v-nabidce', { clip: { x: 0, y: 0, width: 520, height: 900 } })
+// live update: remove one Blatníky item from its card (qty → 0), then add it back
+const blat = () => page.evaluate(() => document.querySelector('.nav-item[data-type="blatniky"]')?.textContent.trim().replace(/\s+/g, ' '))
+const b0 = await blat()
+const firstQty = page.locator('.product-card [data-qty]').first()
+const qid = await firstQty.getAttribute('data-qty')
+await page.locator(`.product-card [data-qty="${qid}"] input`).fill('0')
+await page.locator(`.product-card [data-qty="${qid}"] input`).dispatchEvent('change')
+await page.waitForTimeout(200)
+const b1 = await blat()
+await page.locator(`button[data-add="${qid}"]`).click()
+await page.waitForTimeout(200)
+console.log('nav live', b0, '→', b1, '→', await blat())
+await page.reload({ waitUntil: 'networkidle' })
+await waitThumbs(page)
+console.log('nav after reload', await blat())
+
 // header: supplier filter BEFORE search, „Cenová nabídka“ button with the live total badge
 const hdr = await page.evaluate(() => {
   const x = (sel) => document.querySelector(sel)?.getBoundingClientRect().left ?? null
@@ -168,6 +200,8 @@ const m = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceS
 await m.goto(BASE, { waitUntil: 'networkidle' })
 await waitThumbs(m)
 await m.screenshot({ path: `${OUT}/${PREFIX}06a-mobil-vse.png` })
+await m.locator('button[data-add]').first().click() // a cheap „Držák rezervy“ item from „Vše“
+await m.waitForTimeout(200)
 await openCategory('podkladaci-desky', m)
 for (let i = 0; i < 2; i++) {
   await m.locator('button[data-add]').first().click()
@@ -182,6 +216,10 @@ console.log('mobile header', JSON.stringify(await m.evaluate(() => {
 })))
 await m.screenshot({ path: `${OUT}/${PREFIX}06-mobil-katalog.png` })
 await m.screenshot({ path: `${OUT}/${PREFIX}06b-mobil-hlavicka.png`, clip: { x: 0, y: 0, width: 390, height: 170 } })
+console.log('mobile nav in-quote', JSON.stringify(await m.evaluate(() => [...document.querySelectorAll('.nav-item.in-quote')].map((e) => e.textContent.trim().replace(/\s+/g, ' ') + (e.classList.contains('active') ? ' (active)' : '')))))
+await m.evaluate(() => { const n = document.querySelector('.nav'); const c = n.querySelector('.nav-item[data-type="drzak-rezervy"]'); n.scrollLeft = c ? c.offsetLeft - n.offsetLeft - 150 : 0 })
+await m.waitForTimeout(200)
+await m.screenshot({ path: `${OUT}/${PREFIX}06c-mobil-nav-v-nabidce.png`, clip: { x: 0, y: 0, width: 390, height: 190 } })
 await m.locator('[data-action="open-quote"]').click()
 await m.waitForTimeout(600)
 await waitThumbs(m)
