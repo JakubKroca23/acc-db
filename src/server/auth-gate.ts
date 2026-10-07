@@ -35,7 +35,7 @@ export function createAuthGate(env: Record<string, string | undefined>) {
   const cookieName = (env.MANAGER_SESSION_COOKIE || `a_session_${projectId}`).trim()
   const loginUrl = (env.MANAGER_LOGIN_URL || '/login?next=%2Facc-db%2F').trim()
   const managerUrl = (env.MANAGER_URL || '/').trim()
-  const allowedRoles = (env.ACC_DB_ALLOWED_ROLES || 'dev')
+  const allowedRoles = (env.ACC_DB_ALLOWED_ROLES || '*')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
@@ -107,7 +107,7 @@ export function createAuthGate(env: Record<string, string | undefined>) {
     return user
   }
 
-  const isAllowed = (u: GateUser) => u.labels.some((l) => allowedRoles.includes(l))
+  const isAllowed = (u: GateUser) => allowedRoles.includes('*') || u.labels.some((l) => allowedRoles.includes(l))
 
   function isApiPath(url: string) {
     return /^(?:\/acc-db)?\/api\//.test(url)
@@ -148,7 +148,7 @@ a.sec{background:#fff;color:#18181b;border:1px solid #d4d4d8}
 
   function forbidden(req: IncomingMessage, res: ServerResponse, user: GateUser) {
     if (isApiPath(req.url || '')) {
-      send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'Nemáte přístup — aplikace je zatím dostupná jen pro vývojáře' }))
+      send(res, 403, 'application/json; charset=utf-8', JSON.stringify({ error: 'Nemáte přístup — váš účet nemá potřebnou roli' }))
       return
     }
     send(
@@ -157,7 +157,7 @@ a.sec{background:#fff;color:#18181b;border:1px solid #d4d4d8}
       'text/html; charset=utf-8',
       page(
         'Nemáte přístup',
-        `Aplikace je zatím dostupná jen pro vývojáře.${user.name ? ` Přihlášen: <strong>${esc(user.name)}</strong>.` : ''}`,
+        `Váš účet nemá pro aplikaci potřebnou roli.${user.name ? ` Přihlášen: <strong>${esc(user.name)}</strong>.` : ''}`,
         `<a href="${esc(managerUrl)}">Zpět do Manageru</a>`,
       ),
     )
