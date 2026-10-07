@@ -68,10 +68,11 @@ function apiPlugin(env: Record<string, string>): Plugin {
   }
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = { ...loadEnv(mode, process.cwd(), ''), ...process.env } as Record<string, string>
+  const base = env.VITE_BASE || (command === 'serve' ? '/' : '/acc-db/')
   return {
-    base: '/acc-db/',
+    base,
     plugins: [apiPlugin(env)],
     server: { port: 5173, host: true },
     preview: {
