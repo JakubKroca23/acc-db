@@ -572,7 +572,8 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       const todo = list.filter((m) => m.provider === 'groq' && m.usable && !limits.hasData(m.model) && Date.now() - (lastProbe.get(m.model) || 0) > 10 * 60_000)
       if (todo.length) await Promise.all(todo.slice(0, 6).map((m) => probe(m.model)))
     }
-    const models: ModelOption[] = list.map(({ usable, ...m }) => ({
+    const models: ModelOption[] = list.filter((m) => m.provider === 'ollama').map( // Karel is always the local model; cloud models only help behind the scenes
+      ({ usable, ...m }) => ({
       ...m,
       available: m.provider === 'ollama' ? ollamaOk : usable,
       tools: (m.provider === 'ollama' ? ollamaTools : clouds[m.provider].tools).length > 0,
@@ -815,14 +816,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       context = validateContext(body)
       quote = validateQuote(body)
       const list = await modelList()
-      const wanted = (body as { model?: unknown }).model
-      if (wanted !== undefined && wanted !== null && wanted !== '') {
-        const found = typeof wanted === 'string' ? list.find((m) => m.id === wanted) : undefined
-        if (!found) throw new HttpError(400, 'Vybraný model není k dispozici. Vyberte prosím jiný.')
-        choice = found
-      } else {
-        choice = list.find((m) => m.usable) || list[0]
-      }
+      choice = list.find((m) => m.provider === 'ollama') || list[list.length - 1] // the requested model is ignored: always local + delegation
     } catch (err) {
       if (err instanceof HttpError) return sendJson(res, err.status, { error: err.message })
       throw err
