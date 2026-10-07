@@ -20,7 +20,7 @@
  *   GROQ_TOOLS / OLLAMA_TOOLS  tools offered to the model: "all" | "off" | comma separated tool names
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { createGroqLimits, type ModelLimits } from './groq-limits.ts'
+import { createGroqLimits, type ModelLimits, type GroqLimits } from './groq-limits.ts'
 import { createChatTools, TOOL_DEFS, TOOL_STATUS, ALL_TOOLS, type CatalogData, type ToolDef, type ToolEvent } from './chat-tools.ts'
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string }
@@ -193,7 +193,8 @@ export function validateQuote(body: unknown): Map<string, number> {
 export type ModelOption = {
   id: string
   label: string
-  provider: 'ollama' | 'groq'
+  provider: 'ollama' | 'groq' | 'gemini'
+  description?: string
   model: string
   available: boolean
   tools: boolean
@@ -230,6 +231,36 @@ function ollamaLabel(model: string) {
   return m ? `Lokální – Qwen 2.5 ${m[1]}B (server)` : `Lokální – ${model} (server)`
 }
 
+/** Google Gemini via its OpenAI-compatible endpoint (streaming + tools work; Gemini 3 needs thought signatures echoed). */
+const GEMINI_DEFAULT_MODELS = 'gemini-2.5-flash,gemini-flash-latest'
+const GEMINI_LABELS: Record<string, string> = {
+  'gemini-2.5-flash': 'Gemini 2.5 Flash',
+  'gemini-flash-latest': 'Gemini Flash (nejnovější)',
+  'gemini-2.5-flash-lite': 'Gemini 2.5 Flash-Lite',
+  'gemini-pro-latest': 'Gemini Pro',
+}
+/** Free tier limits are only shown in AI Studio (not in the docs) → conservative defaults, override via GEMINI_LIMITS. */
+const GEMINI_LIMITS: Record<string, { rpm: number; rpd: number; tpm: number }> = {
+  'gemini-2.5-flash': { rpm: 10, rpd: 250, tpm: 250_000 },
+  'gemini-2.5-flash-lite': { rpm: 15, rpd: 1000, tpm: 250_000 },
+  'gemini-flash-latest': { rpm: 5, rpd: 20, tpm: 250_000 },
+}
+const geminiLabel = (m: string) => `Google – ${GEMINI_LABELS[m] || m}`
+function geminiExtras(model: string): Record<string, unknown> {
+  // 2.5 Flash(-Lite): thinking off (fast); Gemini 3+ / *-latest can't disable thinking → low
+  return /^gemini-2\.5-flash/.test(model) ? { reasoning_effort: 'none' } : { reasoning_effort: 'low' }
+}
+
+/** Short Czech description per model for the picker. */
+const DESCRIPTIONS: Record<string, string> = {
+  'groq:openai/gpt-oss-120b': 'nejchytřejší, výchozí',
+  'groq:openai/gpt-oss-20b': 'nejrychlejší',
+  'groq:qwen/qwen3.8-27b': 'vyvážený, dobře česky',
+  'gemini:gemini-2.5-flash': 'rychlý a spolehlivý, menší denní limit',
+  'gemini:gemini-flash-latest': 'nejnovější Flash, chytřejší, pomalejší, jen ~20 dotazů denně',
+  'gemini:gemini-2.5-flash-lite': 'nejlevnější a nejrychlejší od Googlu',
+}
+
 /** Model-specific Groq request fields: no visible reasoning, small reasoning budget (fast answers). */
 function groqExtras(model: string): Record<string, unknown> {
   if (model.startsWith('openai/gpt-oss')) return { reasoning_effort: 'low', include_reasoning: false }
@@ -248,6 +279,8 @@ function toolSet(spec: string | undefined, def: string[]): ToolDef[] {
   return TOOL_DEFS.filter((t) => names.includes(t.function.name))
 }
 
+const fmtWaitCz = (s: number) => (s < 120 ? `${s} s` : s < 7200 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`)
+
 const errText = (err: unknown) => (err instanceof Error ? (err.cause as Error)?.message || err.message : String(err))
 
 /** An upstream (model provider) failure with a Czech message for the user. */
@@ -261,8 +294,10 @@ class UpstreamError extends Error {
   }
 }
 
-type ToolCall = { id: string; name: string; args: Record<string, unknown>; rawArgs: string; bad: boolean }
+type ToolCall = { id: string; name: string; args: Record<string, unknown>; rawArgs: string; bad: boolean; extra?: unknown }
 type Round = { text: string; calls: ToolCall[] }
+/** an OpenAI-compatible cloud provider (GroqCloud, Google Gemini) */
+type Cloud = { id: 'groq' | 'gemini'; title: string; url: string; key: string; limits: GroqLimits; extras: (m: string) => Record<string, unknown>; label: (m: string) => string; tools: ToolDef[] }
 type Msg = Record<string, unknown>
 
 function parseArgs(raw: unknown): { args: Record<string, unknown>; rawArgs: string; bad: boolean } {
@@ -329,10 +364,65 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
   const limits = createGroqLimits(env)
   const lastProbe = new Map<string, number>()
 
+  // ── Google Gemini (OpenAI-compatible endpoint); key server-side only ──
+  const geminiKey = (env.GEMINI_API_KEY || '').trim()
+  const geminiModels = (env.GEMINI_MODELS || GEMINI_DEFAULT_MODELS)
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)
+  const stateFile = (env.CHAT_STATE_FILE || '').trim()
+  const geminiLimits = createGroqLimits(env, {
+    defaults: GEMINI_LIMITS,
+    fallback: { rpm: 5, rpd: 20, tpm: 250_000 },
+    overridesVar: 'GEMINI_LIMITS',
+    file: stateFile ? stateFile.replace(/[^/]*$/, 'gemini-rate.json') : '',
+    localOnly: true,
+    dayTimeZone: 'America/Los_Angeles',
+  })
+  let geminiListed: { at: number; ids: Set<string> | null } | null = null
+
   // ── tools ──
   const tools = createChatTools(data)
   const groqTools = tools.available ? toolSet(env.GROQ_TOOLS, ALL_TOOLS) : []
   const ollamaTools = tools.available ? toolSet(env.OLLAMA_TOOLS || 'off', OLLAMA_DEFAULT_TOOLS) : []
+  const geminiTools = tools.available ? toolSet(env.GEMINI_TOOLS, ALL_TOOLS) : []
+  const clouds: Record<'groq' | 'gemini', Cloud> = {
+    groq: { id: 'groq', title: 'GroqCloud', url: groqUrl, key: groqKey, limits, extras: groqExtras, label: (m) => GROQ_LABELS[m] || m, tools: groqTools },
+    gemini: {
+      id: 'gemini',
+      title: 'Google Gemini',
+      url: (env.GEMINI_URL || 'https://generativelanguage.googleapis.com/v1beta/openai').trim().replace(/\/+$/, ''),
+      key: geminiKey,
+      limits: geminiLimits,
+      extras: geminiExtras,
+      label: (m) => GEMINI_LABELS[m] || m,
+      tools: geminiTools,
+    },
+  }
+
+  /** Which configured Gemini models the key lists (native models API, key in a header; cached 10 min). */
+  async function geminiAvailable(): Promise<Set<string> | null> {
+    if (!geminiKey) return new Set()
+    if (geminiListed && Date.now() - geminiListed.at < GROQ_LIST_TTL_MS) return geminiListed.ids
+    try {
+      const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+        headers: { 'x-goog-api-key': geminiKey },
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS + 1_000),
+      })
+      if (r.status === 400 || r.status === 401 || r.status === 403) {
+        console.warn(`[acc-db chat] Gemini rejected the API key (HTTP ${r.status})`)
+        geminiListed = { at: Date.now() - GROQ_LIST_TTL_MS + 60_000, ids: new Set() }
+        return geminiListed.ids
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const body = (await r.json()) as { models?: { name: string }[] }
+      geminiListed = { at: Date.now(), ids: new Set((body.models || []).map((x) => x.name.replace(/^models\//, ''))) }
+      return geminiListed.ids
+    } catch (err) {
+      console.warn('[acc-db chat] Gemini model list failed:', errText(err))
+      return geminiListed?.ids ?? null
+    }
+  }
 
   /** Chat-capable models this key can use (cached 10 min). null = unknown (network). */
   async function groqDiscover(): Promise<string[] | null> {
@@ -386,9 +476,10 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
 
   /** Whitelist of selectable models (Groq first when a key is configured). */
   async function modelList(): Promise<(ModelChoice & { usable: boolean })[]> {
-    const g = await groqModels()
+    const [g, gem] = await Promise.all([groqModels(), geminiAvailable()])
     return [
       ...g.ids.map((m) => ({ id: `groq:${m}`, label: groqLabel(m), provider: 'groq' as const, model: m, usable: g.usable.has(m) })),
+      ...(geminiKey ? geminiModels : []).map((m) => ({ id: `gemini:${m}`, label: geminiLabel(m), provider: 'gemini' as const, model: m, usable: gem === null || gem.has(m) })),
       { id: ollamaId, label: ollamaLabel(model), provider: 'ollama' as const, model, usable: true },
     ]
   }
@@ -424,8 +515,12 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     const models: ModelOption[] = list.map(({ usable, ...m }) => ({
       ...m,
       available: m.provider === 'ollama' ? ollamaOk : usable,
-      tools: (m.provider === 'groq' ? groqTools : ollamaTools).length > 0,
-      limits: m.provider === 'groq' ? limits.snapshot(m.model) : null,
+      tools: (m.provider === 'ollama' ? ollamaTools : clouds[m.provider].tools).length > 0,
+      limits: m.provider === 'ollama' ? null : clouds[m.provider].limits.snapshot(m.model),
+      description:
+        m.provider === 'ollama'
+          ? `na našem serveru, bez limitu, pomalý${ollamaTools.length ? '' : ', bez nástrojů'}`
+          : `${clouds[m.provider].title} · ${DESCRIPTIONS[m.id] || 'chatovací model'}`,
     }))
     const preferred = models.find((m) => m.id === 'groq:openai/gpt-oss-120b' && m.available)
     const def = preferred || models.find((m) => m.available) || models[0]
@@ -451,21 +546,22 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     ]
   }
 
-  /** One Groq call (streamed). Text deltas go to onText right away; tool calls are collected. */
-  async function groqRound(m: string, msgs: Msg[], toolDefs: ToolDef[], forceText: boolean, signal: AbortSignal, onText: (t: string) => void, onFirst: () => void): Promise<Round> {
+  /** One OpenAI-compatible call (GroqCloud / Gemini, streamed). Text deltas go to onText right away; tool calls are collected. */
+  async function cloudRound(cloud: Cloud, m: string, msgs: Msg[], toolDefs: ToolDef[], forceText: boolean, signal: AbortSignal, onText: (t: string) => void, onFirst: () => void): Promise<Round> {
+    const { limits, title } = cloud
     limits.noteRequest(m)
     let r: Response
     try {
-      r = await fetch(`${groqUrl}/chat/completions`, {
+      r = await fetch(`${cloud.url}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cloud.key}` },
         body: JSON.stringify({
           model: m,
           stream: true,
           stream_options: { include_usage: true },
           max_completion_tokens: 450, // Groq counts this into the tokens/min estimate of every request (answers are short)
           temperature: 0.3,
-          ...groqExtras(m),
+          ...cloud.extras(m),
           messages: msgs,
           ...(toolDefs.length ? { tools: toolDefs, tool_choice: forceText ? 'none' : 'auto' } : {}),
         }),
@@ -473,28 +569,30 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       })
     } catch (err) {
       if (signal.aborted) throw err
-      console.warn('[acc-db chat] Groq unreachable:', errText(err))
-      throw new UpstreamError(503, 'GroqCloud je teď nedostupný. Zkuste to za chvíli nebo přepněte na lokální model.')
+      console.warn(`[acc-db chat] ${title} unreachable:`, errText(err))
+      throw new UpstreamError(503, `${title} je teď nedostupný. Zkuste to za chvíli nebo přepněte model.`)
     }
     limits.noteHeaders(m, r.headers)
     if (!r.ok || !r.body) {
       const text = await r.text().catch(() => '')
-      console.warn(`[acc-db chat] Groq HTTP ${r.status}: ${text.slice(0, 300)}`)
+      console.warn(`[acc-db chat] ${title} HTTP ${r.status}: ${text.slice(0, 300)}`)
       const st = r.status
-      if (st === 401 || st === 403) throw new UpstreamError(502, 'GroqCloud odmítl API klíč (neplatný nebo zablokovaný). Přepněte prosím na lokální model.')
+      if (st === 401 || st === 403) throw new UpstreamError(502, `${title} odmítl API klíč (neplatný nebo zablokovaný). Přepněte prosím model.`)
       if (st === 429) {
-        // retry-after header (s) or „try again in 510ms / 1.5s“ in the message
-        const m429 = text.match(/try again in ([\d.]+)(ms|s)/i)
+        // retry-after header (s), Groq „try again in 510ms / 1.5s“, Gemini RetryInfo "retryDelay": "23s" / „retry in 23.5s“
+        const m429 = text.match(/try again in ([\d.]+)(ms|s)/i) || text.match(/retry in ([\d.]+)(ms|s)/i) || text.match(/"retryDelay":\s*"([\d.]+)(s)"/)
         const ra = Math.ceil(Number(r.headers.get('retry-after'))) || (m429 ? Math.ceil(Number(m429[1]) / (m429[2] === 'ms' ? 1000 : 1)) : null)
         limits.note429(m, ra)
-        throw new UpstreamError(429, `GroqCloud: model ${GROQ_LABELS[m] || m} vyčerpal limit požadavků nebo tokenů${ra ? ` (znovu za ${ra} s)` : ''}. Zkuste to za chvíli nebo vyberte jiný model.`, ra)
+        const daily = cloud.id === 'gemini' && /PerDay|per day/i.test(text)
+        throw new UpstreamError(429, `${title}: model ${cloud.label(m)} vyčerpal ${daily ? 'denní limit' : 'limit požadavků nebo tokenů'}${ra ? ` (znovu za ${fmtWaitCz(ra)})` : ''}. Zkuste to později nebo vyberte jiný model.`, ra)
       }
-      if (st === 404) throw new UpstreamError(503, `Model ${m} teď v GroqCloud není dostupný. Vyberte prosím jiný.`)
+      if (st === 503) throw new UpstreamError(503, `${title}: model ${cloud.label(m)} je teď přetížený. Zkuste to za chvíli nebo vyberte jiný model.`)
+      if (st === 404) throw new UpstreamError(503, `Model ${m} teď v ${title} není dostupný. Vyberte prosím jiný.`)
       if (st === 413) throw new UpstreamError(400, 'Dotaz je pro limit tohoto modelu příliš velký. Začněte novou konverzaci nebo vyberte jiný model.')
-      if (st === 400 && /tool_use_failed|tool call/i.test(text)) throw new UpstreamError(422, 'tool_use_failed')
-      throw new UpstreamError(502, 'GroqCloud vrátil chybu. Zkuste to prosím znovu nebo přepněte model.')
+      if (st === 400 && /tool_use_failed|tool call|function call/i.test(text)) throw new UpstreamError(422, 'tool_use_failed')
+      throw new UpstreamError(502, `${title} vrátil chybu. Zkuste to prosím znovu nebo přepněte model.`)
     }
-    const calls: { id: string; name: string; args: string }[] = []
+    const calls: { id: string; name: string; args: string; extra?: unknown }[] = []
     let text = ''
     for await (const raw of lines(r.body, onFirst)) {
       const l = raw.trim()
@@ -502,7 +600,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       const d = l.slice(5).trim()
       if (d === '[DONE]') break
       let o: {
-        choices?: { delta?: { content?: string; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] } }[]
+        choices?: { delta?: { content?: string; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string }; extra_content?: unknown }[] } }[]
         usage?: { total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } }
         x_groq?: { usage?: { total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } } }
         error?: { message?: string }
@@ -513,9 +611,9 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         continue
       }
       if (o.error) {
-        console.warn('[acc-db chat] Groq stream error:', o.error.message)
+        console.warn(`[acc-db chat] ${title} stream error:`, o.error.message)
         if (/tool/i.test(o.error.message || '')) throw new UpstreamError(422, 'tool_use_failed')
-        throw new UpstreamError(502, 'GroqCloud přerušil odpověď. Zkuste to prosím znovu.')
+        throw new UpstreamError(502, `${title} přerušil odpověď. Zkuste to prosím znovu.`)
       }
       const delta = o.choices?.[0]?.delta
       if (delta?.content) {
@@ -523,9 +621,11 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         onText(delta.content)
       }
       for (const tc of delta?.tool_calls || []) {
-        const i = tc.index ?? calls.length
+        let i = tc.index ?? calls.length
+        if (tc.id && calls[i]?.id && calls[i].id !== tc.id) i = calls.length // Gemini: complete calls, no index
         calls[i] ||= { id: '', name: '', args: '' }
         if (tc.id) calls[i].id = tc.id
+        if (tc.extra_content) calls[i].extra = tc.extra_content // Gemini 3 thought signature — must be sent back
         if (tc.function?.name) calls[i].name += tc.function.name
         if (tc.function?.arguments) calls[i].args += tc.function.arguments
       }
@@ -534,7 +634,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     }
     return {
       text,
-      calls: calls.filter(Boolean).map((c, i) => ({ id: c.id || `call_${i}`, name: c.name, ...parseArgs(c.args) })),
+      calls: calls.filter(Boolean).map((c, i) => ({ id: c.id || `call_${i}`, name: c.name, ...parseArgs(c.args), ...(c.extra ? { extra: c.extra } : {}) })),
     }
   }
 
@@ -625,8 +725,10 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       throw err
     }
 
-    const isGroq = choice.provider === 'groq'
-    if (isGroq) {
+    const cloud = choice.provider === 'ollama' ? null : clouds[choice.provider]
+    const isGroq = !!cloud // = OpenAI-compatible cloud (GroqCloud or Gemini)
+    const limits = cloud?.limits ?? clouds.groq.limits
+    if (cloud) {
       let wait = limits.blockedFor(choice.model)
       if (wait > 0 && wait <= 5) {
         await new Promise((r) => setTimeout(r, wait * 1000 + 200)) // tokens/min window almost reset
@@ -634,7 +736,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       }
       if (wait > 0) {
         res.setHeader('Retry-After', String(wait))
-        return sendJson(res, 429, { error: `GroqCloud: model ${GROQ_LABELS[choice.model] || choice.model} má vyčerpaný limit (znovu za ${wait} s). Vyberte prosím jiný model.`, retryAfter: wait })
+        return sendJson(res, 429, { error: `${cloud.title}: model ${cloud.label(choice.model)} má vyčerpaný limit (znovu za ${fmtWaitCz(wait)}). Vyberte prosím jiný model.`, retryAfter: wait, limits: limits.snapshot(choice.model) })
       }
     }
 
@@ -673,7 +775,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       if (isGroq) line({ type: 'limits', model: choice.id, limits: limits.snapshot(choice.model) })
     }
 
-    const toolDefs = isGroq ? groqTools : ollamaTools
+    const toolDefs = cloud ? cloud.tools : ollamaTools
     let convo = promptMessages(messages, context, toolDefs.length > 0)
     let anyText = false
     let actions = 0
@@ -719,7 +821,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         first = undefined
       }
       try {
-        return isGroq ? await groqRound(choice.model, convo, defs, forceText, rc.signal, onText, onFirst) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
+        return cloud ? await cloudRound(cloud, choice.model, convo, defs, forceText, rc.signal, onText, onFirst) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
       } finally {
         onFirst()
         ctrl.signal.removeEventListener('abort', abort)
@@ -749,7 +851,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         convo = [
           ...convo,
           isGroq
-            ? { role: 'assistant', content: r.text || null, tool_calls: r.calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.rawArgs } })) }
+            ? { role: 'assistant', content: r.text || null, tool_calls: r.calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.rawArgs }, ...(c.extra ? { extra_content: c.extra } : {}) })) }
             : { role: 'assistant', content: r.text, tool_calls: r.calls.map((c) => ({ function: { name: c.name, arguments: c.args } })) },
         ]
         for (const c of r.calls) {
@@ -854,6 +956,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       numThread,
       keepAlive,
       groq: groqKey ? { url: groqUrl, models: groqOverride.length ? groqOverride : 'auto' } : null,
+      gemini: geminiKey ? { models: geminiModels } : null,
       tools: { groq: groqTools.map((t) => t.function.name), ollama: ollamaTools.map((t) => t.function.name) },
     },
   }

@@ -13,7 +13,7 @@ type Role = 'user' | 'assistant'
 type Msg = { role: Role; content: string; error?: boolean; model?: string; actions?: string[] }
 type LimitBar = { limit: number; used: number; remaining: number; resetAt: number | null; source: 'groq' | 'local' } | null
 type ModelLimits = { rpd: LimitBar; tpm: LimitBar; rpm: LimitBar; tpd: LimitBar; blockedUntil: number | null; updatedAt: number | null }
-type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq'; available: boolean; tools?: boolean; limits?: ModelLimits | null }
+type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq' | 'gemini'; available: boolean; tools?: boolean; limits?: ModelLimits | null; description?: string }
 type ApiFetch = (path: string, init?: RequestInit) => Promise<Response>
 
 /** An action from the model (already validated by the server); the host applies it to the app state. */
@@ -33,7 +33,7 @@ const NAME = 'Kapitán Karel'
 const STATUS_REFRESH_MS = 15_000
 
 const nf = new Intl.NumberFormat('cs-CZ')
-const shortLabel = (label: string) => label.replace(/^GroqCloud – /, '').replace(/^Lokální – /, '')
+const shortLabel = (label: string) => label.replace(/^(GroqCloud|Google|Lokální) – /, '')
 
 function fmtWait(ms: number) {
   const s = Math.max(0, Math.ceil(ms / 1000))
@@ -139,45 +139,47 @@ function loadHistory(): Msg[] {
   }
 }
 
-/** One limit bar (remaining share) with tooltip: remaining / limit, reset time, data source. */
-function limitBar(key: keyof typeof BAR_INFO, b: LimitBar, compact: boolean): HTMLElement {
-  const info = BAR_INFO[key]
-  const wrap = el('div', `limit ${compact ? 'is-compact' : ''}`)
-  const name = el('span', 'limit-name', compact ? info.short : info.label)
-  const track = el('span', 'limit-track')
-  const fill = el('span', 'limit-fill')
-  track.append(fill)
-  const num = el('span', 'limit-num')
-  if (!b || !b.limit) {
-    wrap.classList.add('is-empty')
-    num.textContent = 'zatím bez dat'
-    wrap.title = `${info.label}: zatím bez dat (zobrazí se po prvním dotazu na tento model)`
-  } else {
-    const pct = Math.max(0, Math.min(100, (b.remaining / b.limit) * 100))
-    fill.style.width = `${pct}%`
-    wrap.classList.add(level(pct))
-    num.textContent = compact ? `${Math.round(pct)} %` : `${nf.format(b.remaining)} / ${nf.format(b.limit)}`
-    const reset = b.resetAt ? ` · obnoví se za ${fmtWait(b.resetAt - Date.now())} (${clock(b.resetAt)})` : ''
-    const src = b.source === 'groq' ? 'údaj z hlaviček GroqCloud (celá organizace)' : 'místní počítadlo (jen tato aplikace)'
-    wrap.title = `${info.label}: zbývá ${nf.format(b.remaining)} z ${nf.format(b.limit)} ${info.unit} (${Math.round(pct)} %)${reset}\n${src}`
+/** The most constraining limit of a model (lowest remaining share) + a tooltip listing all of them. */
+function limitSummary(m: ModelOption): { pct: number | null; tip: string } {
+  if (m.provider === 'ollama') return { pct: null, tip: 'Lokální model na našem serveru – bez limitu.' }
+  const l = m.limits
+  const lines: string[] = []
+  let pct: number | null = null
+  for (const k of ['rpd', 'tpm', 'rpm', 'tpd'] as const) {
+    const b = l?.[k]
+    const info = BAR_INFO[k]
+    if (!b || !b.limit) {
+      if (k !== 'tpd' || m.provider === 'groq') lines.push(`${info.label}: zatím bez dat`)
+      continue
+    }
+    const p = Math.max(0, Math.min(100, (b.remaining / b.limit) * 100))
+    pct = pct === null ? p : Math.min(pct, p)
+    const reset = b.resetAt ? `, obnova za ${fmtWait(b.resetAt - Date.now())} (${clock(b.resetAt)})` : ''
+    lines.push(`${info.label}: ${nf.format(b.remaining)} z ${nf.format(b.limit)} (${Math.round(p)} %)${reset}${b.source === 'local' ? ' · místní počítadlo' : ''}`)
   }
-  wrap.append(name, track, num)
-  return wrap
+  if (l?.blockedUntil && l.blockedUntil > Date.now()) {
+    pct = 0
+    lines.unshift(`Limit vyčerpán – znovu za ${fmtWait(l.blockedUntil - Date.now())}`)
+  }
+  return { pct, tip: lines.join('\n') }
 }
 
-function limitBars(m: ModelOption, compact: boolean): HTMLElement {
-  const box = el('div', `limits ${compact ? 'is-compact' : ''}`)
-  if (m.provider === 'ollama') {
-    box.append(el('span', 'limits-free', compact ? 'Lokální model · bez limitu' : 'bez limitu (běží na našem serveru, pomalejší)'))
-    return box
+/** tiny gauge: thin bar of the most constraining limit (green / amber / red) */
+function miniGauge(m: ModelOption, cls: string): HTMLElement {
+  const { pct, tip } = limitSummary(m)
+  const g = el('span', `mini-gauge ${cls}`)
+  g.title = tip
+  if (pct === null) {
+    g.classList.add(m.provider === 'ollama' ? 'is-free' : 'is-empty')
+    g.setAttribute('aria-label', m.provider === 'ollama' ? 'bez limitu' : 'limity zatím bez dat')
+    return g
   }
-  const l = m.limits
-  const keys: (keyof typeof BAR_INFO)[] = compact ? ['rpd', 'tpm'] : ['rpd', 'tpm', 'rpm', 'tpd']
-  for (const k of keys) box.append(limitBar(k, l ? l[k] : null, compact))
-  if (l?.blockedUntil && l.blockedUntil > Date.now()) {
-    box.append(el('span', 'limits-blocked', `⏳ limit vyčerpán, znovu za ${fmtWait(l.blockedUntil - Date.now())}`))
-  }
-  return box
+  g.classList.add(level(pct))
+  const fill = el('span', 'mini-gauge-fill')
+  fill.style.width = `${Math.max(4, pct)}%`
+  g.append(fill)
+  g.setAttribute('aria-label', `zbývá ${Math.round(pct)} % limitu`)
+  return g
 }
 
 /** host.getContext: compact snapshot of the user's current screen, sent with every question;
@@ -225,7 +227,10 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   const modelBtnText = el('span', 'chat-model-text', 'Načítám modely…')
   modelBtn.append(modelBtnText)
   modelBtn.disabled = true
-  titleText.append(el('h2', 'chat-title', NAME), modelBtn)
+  const headGauge = el('span', 'chat-head-gauge')
+  const modelLine = el('div', 'chat-model-line')
+  modelLine.append(modelBtn, headGauge)
+  titleText.append(el('h2', 'chat-title', NAME), modelLine)
   titleWrap.append(avatar('chat-head-avatar'), titleText)
   const headActions = el('div', 'chat-head-actions')
   const resetBtn = el('button', 'chat-icon-btn chat-reset')
@@ -242,8 +247,6 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   headActions.append(resetBtn, closeBtn)
   head.append(titleWrap, headActions)
 
-  const headLimits = el('div', 'chat-head-limits')
-  headLimits.hidden = true
 
   const menu = el('div', 'chat-model-menu')
   menu.id = 'chat-model-menu'
@@ -271,7 +274,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   sendBtn.type = 'submit'
   form.append(input, sendBtn)
 
-  panel.append(head, headLimits, menu, log, notice, form)
+  panel.append(head, menu, log, notice, form)
   root.append(fab, panel)
   document.body.append(root)
 
@@ -415,13 +418,11 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
 
   function renderModels() {
     const m = currentModel()
-    modelBtnText.textContent = m ? `${shortLabel(m.label)}${m.provider === 'groq' ? ' · GroqCloud' : ''}` : 'Vyberte model'
+    modelBtnText.textContent = m ? shortLabel(m.label) : 'Vyberte model'
     modelBtn.disabled = loading || models.length < 2
-    // compact bars of the selected model under the header
-    headLimits.replaceChildren()
-    if (m) headLimits.append(limitBars(m, true))
-    headLimits.hidden = !m
-    // dropdown rows
+    headGauge.replaceChildren()
+    if (m) headGauge.append(miniGauge(m, 'is-head'))
+    // simple rows: name + one description line + tiny gauge on the right
     menu.replaceChildren(
       ...models.map((x) => {
         const row = el('button', `chat-model-row${x.id === selectedModel ? ' is-selected' : ''}${x.available ? '' : ' is-unavailable'}`)
@@ -430,14 +431,10 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         row.setAttribute('aria-selected', String(x.id === selectedModel))
         row.dataset.model = x.id
         row.disabled = !x.available
-        const top = el('div', 'chat-model-row-top')
-        top.append(el('span', 'chat-model-name', shortLabel(x.label)), el('span', `chat-model-provider is-${x.provider}`, x.provider === 'groq' ? 'GroqCloud' : 'lokální'))
-        if (!x.available) top.append(el('span', 'chat-model-off', 'nedostupný'))
-        if (x.tools === false) {
-          top.append(el('span', 'chat-model-off is-notools', 'bez nástrojů'))
-          row.title = 'Tento model jen odpovídá: neumí sám hledat v katalogu ani provádět akce (přidat do nabídky, otevřít kategorii…).'
-        } else row.title = 'Umí hledat v katalogu a provádět akce (přidat do nabídky, otevřít kategorii, filtr…).'
-        row.append(top, limitBars(x, false))
+        const text = el('span', 'chat-model-row-text')
+        text.append(el('span', 'chat-model-name', shortLabel(x.label)), el('span', 'chat-model-desc', x.available ? x.description || '' : 'teď nedostupný'))
+        row.append(text, miniGauge(x, 'is-row'))
+        row.title = `${x.tools === false ? 'Jen odpovídá (bez hledání v katalogu a akcí).' : 'Umí hledat v katalogu a provádět akce.'}\n${limitSummary(x).tip}`
         return row
       }),
     )

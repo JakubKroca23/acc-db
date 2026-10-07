@@ -26,7 +26,9 @@ services:
       # GroqCloud: GROQ_API_KEY přichází jen z .env na serveru (env_file výše) — nikdy do gitu ani do frontendu.
       # GROQ_MODELS prázdné = automaticky všechny chatovací modely klíče (výchozí gpt-oss-120b); jinak přesný seznam/pořadí.
       - GROQ_MODELS=${GROQ_MODELS:-}
-      # počítadla limitů GroqCloud přežijí restart / redeploy
+      # Google Gemini: GEMINI_API_KEY jen z .env na serveru; GEMINI_MODELS prázdné = gemini-2.5-flash,gemini-flash-latest
+      - GEMINI_MODELS=${GEMINI_MODELS:-}
+      # počítadla limitů GroqCloud / Gemini přežijí restart / redeploy
       - CHAT_STATE_FILE=/app/state/groq-rate.json
     volumes:
       - acc-db-state:/app/state

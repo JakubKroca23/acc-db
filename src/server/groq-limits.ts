@@ -12,7 +12,7 @@
 import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
 import { dirname } from 'node:path'
 
-export type KnownLimits = { rpm: number; rpd: number; tpm: number; tpd: number }
+export type KnownLimits = { rpm: number; rpd: number; tpm: number; tpd?: number }
 
 const DEFAULT_LIMITS: Record<string, KnownLimits> = {
   'openai/gpt-oss-120b': { rpm: 30, rpd: 1000, tpm: 8000, tpd: 200_000 },
@@ -32,6 +32,9 @@ type ModelState = {
   reqTimes: number[] // local, last 60 s
   tpdDay: string
   tpdUsed: number // local, tokens today (UTC)
+  rpdDay?: string // local mode: requests today (provider's day)
+  rpdUsed?: number
+  tokWin?: [number, number][] // local mode: [time, tokens] in the last 60 s
   blockedUntil?: number // after a 429
 }
 
@@ -66,15 +69,38 @@ const nextUtcMidnight = (t = Date.now()) => {
   const d = new Date(t)
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1)
 }
+/** calendar day + next midnight in a time zone (Gemini resets daily quotas at midnight Pacific time) */
+function tzDay(tz: string, t = Date.now()) {
+  const day = new Date(t).toLocaleDateString('en-CA', { timeZone: tz })
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour12: false, hour: 'numeric', minute: 'numeric', second: 'numeric' }).formatToParts(new Date(t)).map((x) => [x.type, x.value]))
+  const sinceMidnight = ((Number(p.hour) % 24) * 3600 + Number(p.minute) * 60 + Number(p.second)) * 1000
+  return { day, next: t - sinceMidnight + 86_400_000 }
+}
 
-export function createGroqLimits(env: Record<string, string | undefined>) {
+export type LimitsOptions = {
+  /** known per-model limits (free tier) */
+  defaults?: Record<string, KnownLimits>
+  fallback?: KnownLimits
+  /** env var with JSON overrides */
+  overridesVar?: string
+  /** state file (default env.CHAT_STATE_FILE) */
+  file?: string
+  /** no rate-limit headers (Gemini): RPD and TPM come from local counters too */
+  localOnly?: boolean
+  dayTimeZone?: string
+}
+
+export function createGroqLimits(env: Record<string, string | undefined>, opts: LimitsOptions = {}) {
+  const defaults = opts.defaults || DEFAULT_LIMITS
+  const fallback = opts.fallback || FALLBACK_LIMITS
+  const overridesVar = opts.overridesVar || 'GROQ_LIMITS'
   let overrides: Record<string, Partial<KnownLimits>> = {}
   try {
-    if (env.GROQ_LIMITS) overrides = JSON.parse(env.GROQ_LIMITS)
+    if (env[overridesVar]) overrides = JSON.parse(env[overridesVar]!)
   } catch {
-    console.warn('[acc-db chat] GROQ_LIMITS is not valid JSON — using defaults')
+    console.warn(`[acc-db chat] ${overridesVar} is not valid JSON — using defaults`)
   }
-  const file = (env.CHAT_STATE_FILE || '').trim()
+  const file = (opts.file ?? env.CHAT_STATE_FILE ?? '').trim()
   const state = new Map<string, ModelState>()
 
   if (file) {
@@ -102,7 +128,7 @@ export function createGroqLimits(env: Record<string, string | undefined>) {
     saveTimer.unref?.()
   }
 
-  const known = (model: string): KnownLimits => ({ ...(DEFAULT_LIMITS[model] || FALLBACK_LIMITS), ...(overrides[model] || {}) })
+  const known = (model: string): KnownLimits => ({ ...(defaults[model] || fallback), ...(overrides[model] || {}) })
 
   function get(model: string): ModelState {
     let s = state.get(model)
@@ -116,12 +142,22 @@ export function createGroqLimits(env: Record<string, string | undefined>) {
       s.tpdDay = utcDay(now)
       s.tpdUsed = 0
     }
+    if (opts.localOnly) {
+      const d = tzDay(opts.dayTimeZone || 'UTC', now).day
+      if (s.rpdDay !== d) {
+        s.rpdDay = d
+        s.rpdUsed = 0
+      }
+      s.tokWin = (s.tokWin || []).filter(([t]) => now - t < 60_000)
+    }
     return s
   }
 
   /** count a request we are about to send (RPM) */
   function noteRequest(model: string) {
-    get(model).reqTimes.push(Date.now())
+    const s = get(model)
+    s.reqTimes.push(Date.now())
+    if (opts.localOnly) s.rpdUsed = (s.rpdUsed || 0) + 1
     save()
   }
 
@@ -144,7 +180,10 @@ export function createGroqLimits(env: Record<string, string | undefined>) {
 
   function noteUsage(model: string, totalTokens: number, cachedTokens = 0) {
     if (!Number.isFinite(totalTokens) || totalTokens <= 0) return
-    get(model).tpdUsed += Math.max(0, totalTokens - (cachedTokens || 0))
+    const s = get(model)
+    const n = Math.max(0, totalTokens - (cachedTokens || 0))
+    s.tpdUsed += n
+    if (opts.localOnly) (s.tokWin ||= []).push([Date.now(), n])
     save()
   }
 
@@ -159,7 +198,7 @@ export function createGroqLimits(env: Record<string, string | undefined>) {
   }
 
   function hasData(model: string) {
-    return !!get(model).headersAt
+    return opts.localOnly ? true : !!get(model).headersAt
   }
 
   function snapshot(model: string): ModelLimits {
@@ -174,11 +213,13 @@ export function createGroqLimits(env: Record<string, string | undefined>) {
       return { limit: w.limit, remaining, used: w.limit - remaining, resetAt: fresh ? w.resetAt : null, source: 'groq' }
     }
     const rpmUsed = s.reqTimes.length
+    const local = (limit: number, used: number, resetAt: number | null): LimitBar => ({ limit, used, remaining: Math.max(0, limit - used), resetAt, source: 'local' })
+    const tokMin = (s.tokWin || []).reduce((a, [, n]) => a + n, 0)
     return {
-      rpd: fromWindow(s.rpd),
-      tpm: fromWindow(s.tpm),
+      rpd: opts.localOnly ? local(k.rpd, s.rpdUsed || 0, tzDay(opts.dayTimeZone || 'UTC', now).next) : fromWindow(s.rpd),
+      tpm: opts.localOnly ? local(k.tpm, tokMin, s.tokWin?.length ? s.tokWin[0][0] + 60_000 : null) : fromWindow(s.tpm),
       rpm: { limit: k.rpm, used: rpmUsed, remaining: Math.max(0, k.rpm - rpmUsed), resetAt: s.reqTimes.length ? s.reqTimes[0] + 60_000 : null, source: 'local' },
-      tpd: { limit: k.tpd, used: s.tpdUsed, remaining: Math.max(0, k.tpd - s.tpdUsed), resetAt: nextUtcMidnight(now), source: 'local' },
+      tpd: k.tpd ? { limit: k.tpd, used: s.tpdUsed, remaining: Math.max(0, k.tpd - s.tpdUsed), resetAt: nextUtcMidnight(now), source: 'local' } : null,
       blockedUntil: s.blockedUntil && s.blockedUntil > now ? s.blockedUntil : null,
       updatedAt: s.headersAt || null,
     }

@@ -139,3 +139,7 @@ Modely GroqCloud mají nástroje (smyčka max. 5 kroků na serveru, `src/server/
 - akce (server je ověří a pošle prohlížeči jako událost `action`, prohlížeč je provede a ukáže štítek s „Zpět“): `otevrit_kategorii`, `nastavit_filtr_dodavatele`, `hledat_v_katalogu`, `otevrit_detail_produktu`, `pridat_do_nabidky`, `zmenit_mnozstvi_v_nabidce`, `odebrat_z_nabidky`, `otevrit_nabidku`. Žádný zápis do Appwrite, žádné mazání celé nabídky.
 
 Lokální `qwen2.5:3b` má nástroje vypnuté (na CPU serveru ~2 min na dotaz a „přidával“ bez volání nástroje); zapnutí `OLLAMA_TOOLS=on` (malá sada) / `all` / seznam, pak doporučeno `OLLAMA_NUM_CTX=8192`. `GROQ_TOOLS=off` vypne nástroje pro Groq.
+
+### Google Gemini
+
+Když je v `.env` na serveru `GEMINI_API_KEY`, nabídne panel i modely Gemini (OpenAI-kompatibilní endpoint `https://generativelanguage.googleapis.com/v1beta/openai`, streaming + nástroje jako u Groq). Výchozí `GEMINI_MODELS=gemini-2.5-flash,gemini-flash-latest` (Pro modely free tier nepovoluje). Gemini nevrací hlavičky limitů → aplikace počítá požadavky/min, požadavky/den (reset o půlnoci pacifického času) a tokeny/min sama proti konzervativním limitům free tieru (2.5 Flash 10 RPM / 250 RPD, Flash latest 5 RPM / 20 RPD; skutečné hodnoty jsou jen v AI Studiu) – úprava `GEMINI_LIMITS` (JSON). `GEMINI_TOOLS=off` vypne nástroje.
