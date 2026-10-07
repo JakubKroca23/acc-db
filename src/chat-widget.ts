@@ -320,8 +320,10 @@ function limitRing(m: ModelOption, size: number, getModel: () => ModelOption | u
   wrap.tabIndex = 0
   wrap.setAttribute('role', 'button')
   wrap.setAttribute('aria-label', m.provider === 'ollama' ? 'bez limitu' : pct === null ? 'limity zatím bez dat' : `zbývá ${Math.round(pct)} % limitu – podrobnosti`)
-  wrap.append(ring(pct, size, m.provider === 'ollama'))
-  if (named) wrap.title = shortLabel(m.label)
+  if (named) {
+    // header: a plain coloured dot, details in the popover on hover
+    wrap.className = `limit-dot ${m.provider === 'ollama' ? 'is-free' : pct === null ? 'is-empty' : level(pct)}`
+  } else wrap.append(ring(pct, size, m.provider === 'ollama'))
   wrap.addEventListener('mouseenter', () => showPop(wrap, getModel))
   wrap.addEventListener('mouseleave', () => hidePop(200))
   wrap.addEventListener('focus', () => showPop(wrap, getModel))
@@ -378,7 +380,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   fab.type = 'button'
   fab.setAttribute('aria-controls', 'chat-panel')
   fab.setAttribute('aria-expanded', 'false')
-  fab.append(avatar('chat-fab-avatar'), el('span', 'chat-fab-label', NAME))
+  fab.append(avatar('chat-fab-avatar'))
   fab.title = `${NAME} — AI asistent katalogu. Zeptejte se na cokoli k aplikaci.`
   fab.setAttribute('aria-label', `${NAME} — otevřít AI asistenta`)
 
@@ -403,7 +405,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   let helpers: ModelOption[] = [] // cloud helper models (limits only)
   const headGauge = el('span', 'chat-head-gauge')
   const modelLine = el('div', 'chat-model-line')
-  modelLine.append(modelBtn, headGauge)
+  modelLine.append(modelBtnText, headGauge) // plain subtitle + dots; the picker button is no longer shown (Karel is always the local model)
   titleText.append(el('h2', 'chat-title', NAME), modelLine)
   titleWrap.append(avatar('chat-head-avatar'), titleText)
   const headActions = el('div', 'chat-head-actions')
@@ -618,7 +620,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     modelBtnText.textContent = m ? shortLabel(m.label) : 'Vyberte model'
     modelBtn.disabled = loading || models.length < 2
     headGauge.replaceChildren()
-    for (const h of helpers) headGauge.append(limitRing(h, 26, () => helpers.find((y) => y.id === h.id), true))
+    for (const h of [...models, ...helpers]) headGauge.append(limitRing(h, 26, () => [...models, ...helpers].find((y) => y.id === h.id), true))
     // simple rows: name + one description line + tiny gauge on the right
     menu.replaceChildren(
       ...models.map((x) => {
