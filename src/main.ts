@@ -79,7 +79,17 @@ let quoteNote = loadNote()
 let statusText = 'Načítám…'
 let statusError = false
 
-let selectedSlug: string | null = null
+/** Pseudo-category „Vše“ — the whole catalogue across all categories. */
+const ALL_SLUG = 'vse'
+const PAGE_SIZE = 60
+
+function slugFromHash(): string | null {
+  const m = location.hash.match(/^#\/?([a-z0-9-]+)$/i)
+  return m ? decodeURIComponent(m[1]) : null
+}
+
+let selectedSlug: string | null = slugFromHash()
+let renderLimit = PAGE_SIZE
 let searchQ = ''
 let supplierFilter = ''
 let viewMode: 'browse' | 'search' | 'quote' = 'browse'
@@ -126,8 +136,9 @@ async function loadBootstrap() {
       stats = (await statsRes.json()) as DbStats
       updateStatus = (stats as DbStats & { catalogUpdate?: CatalogUpdateStatus }).catalogUpdate || null
     }
-    if (!selectedSlug && types.length) {
-      selectedSlug = types.find((t) => !t.parentSlug)?.slug || types[0].slug
+    // Default view = „Vše“, unless a (valid) category is already selected via #/slug.
+    if (!selectedSlug || (selectedSlug !== ALL_SLUG && !types.some((t) => t.slug === selectedSlug))) {
+      selectedSlug = ALL_SLUG
     }
     statusText = stats
       ? `${stats.products} produktů · ${stats.types} druhů · aktualizováno ${new Date(stats.updatedAt).toLocaleString('cs-CZ')}`
@@ -163,7 +174,7 @@ async function loadProductsForCurrent() {
     const params = new URLSearchParams()
     if (viewMode === 'search' && searchQ.trim()) {
       params.set('q', searchQ.trim())
-    } else if (selectedSlug) {
+    } else if (selectedSlug && selectedSlug !== ALL_SLUG) {
       params.set('type', selectedSlug)
     }
     if (supplierFilter) params.set('supplier', supplierFilter)
@@ -171,6 +182,7 @@ async function loadProductsForCurrent() {
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     catalogItems = data.items as Product[]
+    renderLimit = PAGE_SIZE
     catalogSuppliers = data.suppliers as string[]
     for (const p of catalogItems) productsById.set(p.id, p)
     catalogLoading = false
@@ -213,7 +225,10 @@ function selectType(slug: string) {
   selectedSlug = slug
   viewMode = 'browse'
   searchQ = ''
+  searchEl.value = ''
   supplierFilter = ''
+  history.replaceState(null, '', slug === ALL_SLUG ? location.pathname + location.search : `#/${slug}`)
+  window.scrollTo({ top: 0 })
   void loadProductsForCurrent()
 }
 
@@ -415,10 +430,21 @@ function downloadCsv() {
 }
 
 function printQuote() {
+  // Print from the full-page quote view (drawer is screen-only), after thumbnails load.
   viewMode = 'quote'
-  cartOpen = true
+  setCartOpen(false)
   render()
-  window.setTimeout(() => window.print(), 120)
+  const imgs = [...document.querySelectorAll<HTMLImageElement>('#quote-print img')]
+  const ready = imgs.map((img) =>
+    img.complete
+      ? Promise.resolve()
+      : new Promise<void>((r) => {
+          img.addEventListener('load', () => r(), { once: true })
+          img.addEventListener('error', () => r(), { once: true })
+        }),
+  )
+  imgs.forEach((img) => (img.loading = 'eager'))
+  void Promise.race([Promise.all(ready), new Promise((r) => window.setTimeout(r, 2500))]).then(() => window.print())
 }
 
 // ── catalog update ────────────────────────────────────────────────
@@ -474,6 +500,30 @@ function startUpdatePolling() {
   }, 2000)
 }
 
+// ── supplier colours & images ─────────────────────────────────────
+/** Stable CSS modifier for a supplier — ALSAP red, Trans-Technik blue, Hydrotruck green. */
+function supplierKey(supplier: string): string {
+  const s = supplier.toLocaleLowerCase('cs')
+  if (s.includes('alsap')) return 'alsap'
+  if (s.includes('trans')) return 'tt'
+  if (s.includes('hydro')) return 'ht'
+  return 'other'
+}
+
+function supplierBadge(supplier: string, extra = ''): string {
+  return `<span class="sup-badge sup-${supplierKey(supplier)} ${extra}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(supplier)}</span>`
+}
+
+/** All supplier thumbnails go through our own origin (cache, allowlist, jpg→webp repair). */
+function imgSrc(url: string): string {
+  return `${API_BASE}/img?url=${encodeURIComponent(url)}`
+}
+
+function thumbHtml(p: Product, cls = 'thumb-img'): string {
+  if (!p.imageUrl) return `<div class="img-fallback sup-${supplierKey(p.supplier)}">${escapeHtml(p.supplier.slice(0, 1))}</div>`
+  return `<img class="${cls}" src="${escapeAttr(imgSrc(p.imageUrl))}" alt="" loading="lazy" decoding="async" data-fallback="${escapeAttr(p.supplier.slice(0, 1))}" data-sup="${supplierKey(p.supplier)}" />`
+}
+
 // ── render helpers ────────────────────────────────────────────────
 function navHtml(): string {
   const cats = [...new Set(types.map((t) => t.category))]
@@ -484,7 +534,15 @@ function navHtml(): string {
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
   })
 
-  return sorted
+  const allActive = selectedSlug === ALL_SLUG && viewMode === 'browse'
+  const total = stats?.products ?? 0
+  const allBtn = `
+    <div class="nav-group nav-group-all">
+      <button type="button" class="nav-item nav-all ${allActive ? 'active' : ''}" data-type="${ALL_SLUG}" ${allActive ? 'aria-current="page"' : ''}>
+        <span>Vše</span>${total ? `<span class="nav-count">${total}</span>` : ''}
+      </button>
+    </div>`
+  return allBtn + sorted
     .map((cat) => {
       const roots = types
         .filter((t) => t.category === cat && (!t.parentSlug || !types.some((x) => x.slug === t.parentSlug)))
@@ -499,13 +557,13 @@ function navHtml(): string {
                 .sort((a, b) => a.sortOrder - b.sortOrder)
               const active = selectedSlug === t.slug && viewMode === 'browse'
               return `
-                <button type="button" class="nav-item ${active ? 'active' : ''}" data-type="${escapeAttr(t.slug)}">
+                <button type="button" class="nav-item ${active ? 'active' : ''}" data-type="${escapeAttr(t.slug)}" ${active ? 'aria-current="page"' : ''}>
                   <span>${escapeHtml(t.name)}</span>
                 </button>
                 ${children
                   .map((c) => {
                     const cActive = selectedSlug === c.slug && viewMode === 'browse'
-                    return `<button type="button" class="nav-item nested ${cActive ? 'active' : ''}" data-type="${escapeAttr(c.slug)}">
+                    return `<button type="button" class="nav-item nested ${cActive ? 'active' : ''}" data-type="${escapeAttr(c.slug)}" ${cActive ? 'aria-current="page"' : ''}>
                       <span>${escapeHtml(c.name)}</span>
                     </button>`
                   })
@@ -539,7 +597,6 @@ function relatedStripHtml(): string {
     </section>`
 }
 
-
 function formatHistoryDate(iso: string): string {
   try {
     return new Date(iso).toLocaleString('cs-CZ', { dateStyle: 'short', timeStyle: 'short' })
@@ -547,7 +604,6 @@ function formatHistoryDate(iso: string): string {
     return iso
   }
 }
-
 
 function quoteHistoryHint(productId: string): string {
   const rows = priceHistoryCache[productId]
@@ -582,38 +638,40 @@ function historyPanelHtml(p: Product): string {
   </div>`
 }
 
+function showCategoryOnCards(): boolean {
+  return viewMode === 'search' || selectedSlug === ALL_SLUG
+}
+
 function productCardHtml(p: Product): string {
   const qty = cart[p.id] || 0
-  const img = p.imageUrl
-    ? `<img src="${escapeAttr(p.imageUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
-    : `<div class="img-fallback">${escapeHtml(p.supplier.slice(0, 1))}</div>`
   return `
     <article class="product-card ${qty ? 'in-cart' : ''}">
-      <div class="thumb">${img}</div>
+      <div class="thumb">${thumbHtml(p)}</div>
       <div class="product-body">
+        <div class="product-meta-top">${supplierBadge(p.supplier)}${p.sku ? `<span class="sku">${escapeHtml(p.sku)}</span>` : ''}</div>
+        ${showCategoryOnCards() ? `<div class="product-cat">${escapeHtml(typeName(p.typeSlug))}</div>` : ''}
         <div class="product-name">${escapeHtml(p.name)}</div>
-        <div class="product-meta">
-          <span class="supplier">${escapeHtml(p.supplier)}</span>
-          ${p.dimensions ? `<span>${escapeHtml(p.dimensions)}</span>` : ''}
-          ${p.sku ? `<span>SKU ${escapeHtml(p.sku)}</span>` : ''}
+        ${p.dimensions ? `<div class="product-dims">${escapeHtml(p.dimensions)}</div>` : ''}
+        <div class="product-price">
+          <div>${dualPrice(p.price, p.priceVat)} <span class="muted">/ ${escapeHtml(p.unit)}</span></div>
+          <button type="button" class="link-btn history-link" data-history="${escapeAttr(p.id)}" aria-expanded="${historyOpenId === p.id}">Historie cen</button>
         </div>
-        <div class="product-price">${dualPrice(p.price, p.priceVat)} <span class="muted">/ ${escapeHtml(p.unit)}</span></div>
         <div class="product-actions">
           ${
             qty
               ? `<div class="qty" data-qty="${escapeAttr(p.id)}">
                   <button type="button" data-dec aria-label="Snížit">−</button>
-                  <input type="number" min="0" value="${qty}" />
+                  <input type="number" min="0" value="${qty}" aria-label="Množství" />
                   <button type="button" data-inc aria-label="Zvýšit">+</button>
                 </div>`
-              : `<button class="primary-btn" type="button" data-add="${escapeAttr(p.id)}">Přidat</button>`
+              : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}">Přidat</button>`
           }
+          <span class="spacer"></span>
           ${
             p.productUrl
-              ? `<a class="link" href="${escapeAttr(p.productUrl)}" target="_blank" rel="noopener noreferrer">Detail</a>`
+              ? `<a class="link-btn" href="${escapeAttr(p.productUrl)}" target="_blank" rel="noopener noreferrer">Detail ↗</a>`
               : ''
           }
-          <button type="button" class="link history-btn" data-history="${escapeAttr(p.id)}">Historie cen</button>
         </div>
         ${historyPanelHtml(p)}
       </div>
@@ -632,7 +690,7 @@ function quotePanelHtml(embedded = false): string {
   if (!lines.length) {
     return `<div class="quote-empty">
       <h2>Cenová nabídka</h2>
-      <p>Zatím nic ve výběru. Vyberte produkty v katalogu.</p>
+      <p>Zatím nic ve výběru. Vyberte produkty v katalogu tlačítkem „Přidat“.</p>
     </div>`
   }
 
@@ -642,57 +700,61 @@ function quotePanelHtml(embedded = false): string {
       const subVat = group.reduce((a, l) => a + l.lineVat, 0)
       const ship = shipping.find((s) => s.supplier === supplier)
       return `
-        <section class="quote-supplier">
-          <h3>${escapeHtml(supplier)}</h3>
+        <section class="quote-supplier sup-${supplierKey(supplier)}">
+          <h3>${supplierBadge(supplier, 'lg')}<span class="qs-count">${group.length} ${group.length === 1 ? 'položka' : group.length < 5 ? 'položky' : 'položek'}</span></h3>
           <table class="quote-table">
             <thead>
               <tr>
+                <th class="q-thumb-col c-thumb" aria-hidden="true"></th>
                 <th>Položka</th>
-                <th>Mj</th>
-                <th>Cena bez / s DPH</th>
-                <th>Počet</th>
-                <th>Řádek bez / s DPH</th>
-                <th class="no-print"></th>
+                <th class="num q-unit-col c-unit">Cena bez / s DPH</th>
+                <th class="q-qty-col c-qty">Počet</th>
+                <th class="num c-line">Řádek bez / s DPH</th>
+                <th class="no-print c-rm"></th>
               </tr>
             </thead>
             <tbody>
               ${group
                 .map(
                   (l) => `<tr>
+                    <td class="q-thumb-col"><div class="q-thumb">${thumbHtml(l.product, 'q-thumb-img')}</div></td>
                     <td>
                       <div class="q-name">${escapeHtml(l.product.name)}</div>
+                      <div class="q-meta">${escapeHtml(typeName(l.product.typeSlug))}${l.product.dimensions ? ` · ${escapeHtml(l.product.dimensions)}` : ''}${l.product.sku ? ` · SKU ${escapeHtml(l.product.sku)}` : ''}</div>
+                      <div class="q-unit-inline">${formatCzkExact(l.product.price)} bez DPH · ${formatCzkExact(l.product.priceVat)} s DPH / ${escapeHtml(l.product.unit)}</div>
                       ${quoteHistoryHint(l.product.id)}
-                      <div class="q-meta">${escapeHtml(typeName(l.product.typeSlug))}
-                        ${l.product.dimensions ? ` · ${escapeHtml(l.product.dimensions)}` : ''}
-                        ${l.product.sku ? ` · SKU ${escapeHtml(l.product.sku)}` : ''}
-                      </div>
                     </td>
-                    <td>${escapeHtml(l.product.unit)}</td>
-                    <td class="num">${formatCzkExact(l.product.price)}<br /><span class="muted">${formatCzkExact(l.product.priceVat)}</span></td>
-                    <td>
+                    <td class="num q-unit-col">${formatCzkExact(l.product.price)}<br /><span class="muted">${formatCzkExact(l.product.priceVat)} / ${escapeHtml(l.product.unit)}</span></td>
+                    <td class="q-qty-col">
                       <div class="qty compact no-print" data-qty="${escapeAttr(l.product.id)}">
                         <button type="button" data-dec aria-label="Snížit">−</button>
-                        <input type="number" min="0" value="${l.qty}" />
+                        <input type="number" min="0" value="${l.qty}" aria-label="Množství" />
                         <button type="button" data-inc aria-label="Zvýšit">+</button>
                       </div>
-                      <span class="print-only">${l.qty}</span>
+                      <span class="print-only">${l.qty} ${escapeHtml(l.product.unit)}</span>
                     </td>
                     <td class="num"><strong>${formatCzkExact(l.lineExVat)}</strong><br /><span class="muted">${formatCzkExact(l.lineVat)}</span></td>
-                    <td class="no-print"><button type="button" class="ghost-btn tiny" data-remove="${escapeAttr(l.product.id)}" aria-label="Odebrat">✕</button></td>
+                    <td class="no-print"><button type="button" class="btn btn-ghost btn-icon" data-remove="${escapeAttr(l.product.id)}" aria-label="Odebrat" title="Odebrat">✕</button></td>
                   </tr>`,
                 )
                 .join('')}
             </tbody>
             <tfoot>
               <tr>
-                <td colspan="4">Mezisoučet zboží ${escapeHtml(supplier)}</td>
+                <td class="q-thumb-col"></td>
+                <td>Mezisoučet zboží</td>
+                <td class="q-unit-col"></td>
+                <td class="q-qty-col"></td>
                 <td class="num"><strong>${formatCzkExact(subEx)}</strong><br /><span class="muted">${formatCzkExact(subVat)}</span></td>
                 <td class="no-print"></td>
               </tr>
               ${
                 ship
                   ? `<tr class="ship-row">
-                      <td colspan="4">Doprava ${escapeHtml(supplier)} <span class="muted">— ${escapeHtml(ship.note)}${ship.free ? ' · zdarma' : ''}</span></td>
+                      <td class="q-thumb-col"></td>
+                      <td>Doprava <span class="muted">— ${escapeHtml(ship.note)}${ship.free ? ' · zdarma' : ''}</span></td>
+                      <td class="q-unit-col"></td>
+                      <td class="q-qty-col"></td>
                       <td class="num">${formatCzkExact(ship.shippingExVat)}<br /><span class="muted">${formatCzkExact(ship.shippingVat)}</span></td>
                       <td class="no-print"></td>
                     </tr>`
@@ -705,25 +767,33 @@ function quotePanelHtml(embedded = false): string {
     .join('')
 
   return `
-    <div class="quote ${embedded ? 'embedded' : ''}" id="quote-print">
+    <div class="quote ${embedded ? 'embedded' : ''}" ${embedded ? '' : 'id="quote-print"'}>
+      <div class="print-brand print-only-block">
+        <img src="${import.meta.env.BASE_URL}brand/contsystem-logo.png" alt="ContSystem" />
+        <div class="print-brand-meta">
+          <div>Katalog příslušenství</div>
+          <div>${escapeHtml(now)}</div>
+        </div>
+      </div>
       <header class="quote-head">
         <div>
-          <div class="quote-kicker">ACC-DB · orientační nabídka</div>
+          <div class="quote-kicker">Orientační nabídka</div>
           <h2>Cenová nabídka příslušenství</h2>
           <p class="quote-date">${escapeHtml(now)}</p>
         </div>
         <div class="quote-actions no-print">
-          <button type="button" class="ghost-btn" data-action="copy-quote">Kopírovat do schránky</button>
-          <button type="button" class="ghost-btn" data-action="csv-quote">Stáhnout CSV</button>
-          <button type="button" class="primary-btn" data-action="print-quote">Tisk / PDF</button>
+          <button type="button" class="btn btn-outline" data-action="copy-quote">Kopírovat</button>
+          <button type="button" class="btn btn-outline" data-action="csv-quote">CSV</button>
+          ${embedded ? `<button type="button" class="btn btn-outline" data-action="open-quote">Celá nabídka</button>` : ''}
+          <button type="button" class="btn btn-primary" data-action="print-quote">Tisk / PDF</button>
         </div>
       </header>
-      <p class="quote-disclaimer">Ceny jsou orientační z veřejných katalogů dodavatelů — nejde o závazný ceník. Před předáním obchodníkům zkontrolujte množství a položky.</p>
+      <p class="quote-disclaimer">Ceny jsou orientační z veřejných katalogů dodavatelů — nejde o závazný ceník. Před předáním zkontrolujte množství a položky.</p>
       <label class="quote-note no-print">
-        <span>Poznámka pro obchodníky</span>
+        <span>Poznámka k nabídce</span>
         <textarea data-quote-note rows="2" placeholder="např. zakázka XY, termín, specifikace nástavby…">${escapeHtml(quoteNote)}</textarea>
       </label>
-      ${quoteNote.trim() ? `<div class="quote-note-print print-only"><strong>Poznámka:</strong> ${escapeHtml(quoteNote)}</div>` : ''}
+      ${quoteNote.trim() ? `<div class="quote-note-print print-only-block"><strong>Poznámka:</strong> ${escapeHtml(quoteNote)}</div>` : ''}
       ${groupsHtml}
       <div class="quote-totals">
         <div class="qt-row"><span>Zboží celkem</span><span>${formatCzkExact(goodsEx)} <span class="muted">bez DPH</span> · <strong>${formatCzkExact(goodsVat)}</strong> <span class="muted">s DPH</span></span></div>
@@ -731,8 +801,9 @@ function quotePanelHtml(embedded = false): string {
         <div class="qt-row grand"><span>Celkem</span><span>${formatCzkExact(goodsEx + shipEx)} <span class="muted">bez DPH</span> · <strong>${formatCzkExact(goodsVat + shipVat)}</strong> <span class="muted">s DPH</span></span></div>
       </div>
       <div class="quote-foot no-print">
-        <button type="button" class="ghost-btn" data-action="clear" ${lines.length ? '' : 'disabled'}>Vymazat nabídku</button>
+        <button type="button" class="btn btn-ghost danger" data-action="clear">Vymazat nabídku</button>
       </div>
+      <div class="print-foot print-only-block">ContSystem · Katalog příslušenství · ceny orientační, platné ke dni vystavení</div>
     </div>`
 }
 
@@ -752,106 +823,223 @@ function cartCount(): number {
   return Object.values(cart).reduce((a, n) => a + n, 0)
 }
 
-function render() {
+// ── layout: static shell + region renders ─────────────────────────
+// The shell (header, search box, drawer, backdrop) is created ONCE. Regions are
+// re-rendered individually so the search input keeps focus while typing and the
+// drawer element persists — its CSS slide-out transition can actually play.
+const BASE = import.meta.env.BASE_URL
+
+app.innerHTML = `
+  <div class="shell">
+    <header class="app-header">
+      <a class="brand" href="${BASE}" aria-label="ContSystem — Katalog příslušenství">
+        <img class="brand-logo" src="${BASE}brand/contsystem-logo-mark.png" alt="ContSystem" width="128" height="26" />
+        <span class="brand-divider" aria-hidden="true"></span>
+        <span class="brand-app">Katalog příslušenství</span>
+      </a>
+      <div class="header-search">
+        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input class="search" type="search" placeholder="Hledat v celém katalogu…" aria-label="Hledat produkty" data-global-search />
+      </div>
+      <div class="header-actions" data-region="header-actions"></div>
+    </header>
+    <div class="body-row">
+      <aside class="sidebar">
+        <nav class="nav" aria-label="Kategorie" data-region="nav"></nav>
+        <div class="sidebar-foot">
+          <button type="button" class="btn btn-sidebar block" data-action="update-catalog">Aktualizovat katalog</button>
+          <div class="status tiny" data-region="status"></div>
+        </div>
+      </aside>
+      <div class="main-col">
+        <div data-region="notices"></div>
+        <main class="content" data-region="main"></main>
+      </div>
+    </div>
+  </div>
+  <div class="backdrop no-print" data-action="close-cart" aria-hidden="true"></div>
+  <aside class="cart-drawer no-print" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true" inert>
+    <div class="cart-drawer-head">
+      <h2 id="drawer-title">Košík / nabídka</h2>
+      <button type="button" class="btn btn-ghost" data-action="close-cart" aria-label="Zavřít košík">Zavřít ✕</button>
+    </div>
+    <div class="cart-drawer-body" data-region="drawer"></div>
+  </aside>
+`
+
+const region = (name: string) => app.querySelector<HTMLElement>(`[data-region="${name}"]`)!
+const drawerEl = app.querySelector<HTMLElement>('.cart-drawer')!
+const backdropEl = app.querySelector<HTMLElement>('.backdrop')!
+const searchEl = app.querySelector<HTMLInputElement>('[data-global-search]')!
+let lastFocusBeforeDrawer: HTMLElement | null = null
+
+function setCartOpen(open: boolean) {
+  if (cartOpen === open) return
+  cartOpen = open
+  drawerEl.classList.toggle('open', open)
+  backdropEl.classList.toggle('open', open)
+  drawerEl.setAttribute('aria-hidden', String(!open))
+  document.documentElement.classList.toggle('drawer-open', open)
+  if (open) {
+    drawerEl.removeAttribute('inert')
+    lastFocusBeforeDrawer = document.activeElement as HTMLElement | null
+    renderDrawer()
+    // focus after the frame so the transform transition starts from the closed state
+    requestAnimationFrame(() => drawerEl.querySelector<HTMLElement>('[data-action="close-cart"]')?.focus({ preventScroll: true }))
+  } else {
+    drawerEl.setAttribute('inert', '')
+    lastFocusBeforeDrawer?.focus?.({ preventScroll: true })
+  }
+  renderHeaderActions()
+}
+
+function renderHeaderActions() {
   const lines = cartLines()
   const shipping = shippingForCart(lines)
   const goodsVat = lines.reduce((a, l) => a + l.lineVat, 0)
   const shipVat = shipping.reduce((a, s) => a + s.shippingVat, 0)
-  const t = currentType()
-  const heading =
-    viewMode === 'search'
-      ? `Hledání: „${searchQ.trim() || '…'}“`
-      : viewMode === 'quote'
-        ? 'Cenová nabídka'
-        : t?.name || 'Katalog'
-
-  app.innerHTML = `
-    <div class="shell">
-      <aside class="sidebar">
-        <div class="brand-block">
-          <div class="brand">ACC-DB</div>
-          <div class="brand-sub">Kalkulačka příslušenství</div>
-        </div>
-        <nav class="nav" aria-label="Kategorie">${navHtml()}</nav>
-        <div class="sidebar-foot">
-          <button type="button" class="ghost-btn block" data-action="update-catalog">Aktualizovat katalog</button>
-          <div class="status tiny ${statusError ? 'error' : ''}">${escapeHtml(statusText)}</div>
-        </div>
-      </aside>
-
-      <div class="main-col">
-        <header class="topbar">
-          <div class="search-wrap">
-            <input class="search" type="search" placeholder="Hledat v celém katalogu…" value="${escapeAttr(searchQ)}" aria-label="Hledat produkty" data-global-search />
-            <select data-supplier aria-label="Dodavatel" ${viewMode === 'quote' ? 'disabled' : ''}>
-              <option value="">Všichni dodavatelé</option>
-              ${catalogSuppliers
-                .map(
-                  (s) =>
-                    `<option value="${escapeAttr(s)}" ${s === supplierFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`,
-                )
-                .join('')}
-            </select>
-          </div>
-          <div class="top-actions">
-            <button type="button" class="ghost-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote">
-              Nabídka${cartCount() ? ` (${cartCount()})` : ''}
-            </button>
-            <button type="button" class="primary-btn cart-fab" data-action="toggle-cart" aria-expanded="${cartOpen}">
-              Košík · ${formatCzk(goodsVat + shipVat)}
-            </button>
-          </div>
-        </header>
-
-        ${updateStatusHtml()}
-        ${toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''}
-
-        ${
-          viewMode === 'quote'
-            ? `<main class="content quote-view">${quotePanelHtml()}</main>`
-            : `<main class="content">
-                <div class="content-head">
-                  <h1>${escapeHtml(heading)}</h1>
-                  <p class="lead">${
-                    viewMode === 'search'
-                      ? `${catalogItems.length} výsledků`
-                      : t
-                        ? `Procházejte produkty · ceny bez DPH i s DPH · ${catalogItems.length} položek`
-                        : ''
-                  }</p>
-                </div>
-                ${relatedStripHtml()}
-                <div class="product-grid">
-                  ${
-                    catalogLoading
-                      ? `<div class="empty">Načítám produkty…</div>`
-                      : catalogError
-                        ? `<div class="empty error">${escapeHtml(catalogError)}</div>`
-                        : !catalogItems.length
-                          ? `<div class="empty">Žádné produkty</div>`
-                          : catalogItems.map((p) => productCardHtml(p)).join('')
-                  }
-                </div>
-              </main>`
-        }
-      </div>
-
-      <aside class="cart-drawer ${cartOpen || viewMode === 'quote' ? 'open' : ''}" aria-label="Košík a nabídka">
-        <div class="cart-drawer-inner">
-          <div class="cart-drawer-head no-print">
-            <h2>Nabídka / košík</h2>
-            <button type="button" class="ghost-btn" data-action="toggle-cart">Zavřít</button>
-          </div>
-          ${quotePanelHtml(true)}
-        </div>
-      </aside>
-      ${cartOpen && viewMode !== 'quote' ? `<div class="backdrop no-print" data-action="toggle-cart"></div>` : ''}
-    </div>
-  `
-
-  bindEvents()
+  const count = cartCount()
+  region('header-actions').innerHTML = `
+    <select class="select" data-supplier aria-label="Dodavatel" ${viewMode === 'quote' ? 'disabled' : ''}>
+      <option value="">Všichni dodavatelé</option>
+      ${catalogSuppliers
+        .map((s) => `<option value="${escapeAttr(s)}" ${s === supplierFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`)
+        .join('')}
+    </select>
+    <button type="button" class="hdr-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote">
+      Nabídka${count ? ` <span class="count">${count}</span>` : ''}
+    </button>
+    <button type="button" class="btn btn-primary cart-btn" data-action="toggle-cart" aria-expanded="${cartOpen}" aria-controls="drawer-title">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.5L21 8H6.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="20" r="1.4" fill="currentColor"/><circle cx="17" cy="20" r="1.4" fill="currentColor"/></svg>
+      <span class="cart-label">Košík</span>
+      <span class="cart-total">${formatCzk(goodsVat + shipVat)}</span>
+    </button>`
 }
 
+function renderNav() {
+  const nav = region('nav')
+  const prevLeft = nav.scrollLeft
+  nav.innerHTML = navHtml()
+  // Mobile: nav is a horizontal chip strip — keep position, reveal the active chip.
+  if (nav.scrollWidth > nav.clientWidth + 4) {
+    nav.scrollLeft = prevLeft
+    const active = nav.querySelector<HTMLElement>('.nav-item.active')
+    if (active) {
+      const left = active.offsetLeft - nav.offsetLeft
+      if (left < nav.scrollLeft || left + active.offsetWidth > nav.scrollLeft + nav.clientWidth) {
+        nav.scrollLeft = left - 12
+      }
+    }
+  }
+  const st = region('status')
+  st.textContent = statusText
+  st.classList.toggle('error', statusError)
+}
+
+function renderNotices() {
+  region('notices').innerHTML = `${updateStatusHtml()}${toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''}`
+}
+
+function renderMain() {
+  const t = currentType()
+  const main = region('main')
+  main.classList.toggle('quote-view', viewMode === 'quote')
+  if (viewMode === 'quote') {
+    main.innerHTML = quotePanelHtml()
+    return
+  }
+  const isAll = viewMode === 'browse' && selectedSlug === ALL_SLUG
+  const heading = viewMode === 'search' ? `Hledání: „${searchQ.trim() || '…'}“` : isAll ? 'Vše' : t?.name || 'Katalog'
+  const supplierCounts = new Map<string, number>()
+  for (const p of catalogItems) supplierCounts.set(p.supplier, (supplierCounts.get(p.supplier) || 0) + 1)
+  main.innerHTML = `
+    <div class="content-head">
+      <div>
+        ${isAll ? `<div class="crumb">Celý katalog</div>` : viewMode === 'browse' && t ? `<div class="crumb">${escapeHtml(t.category)}</div>` : ''}
+        <h1>${escapeHtml(heading)}</h1>
+        <p class="lead">${
+          viewMode === 'search'
+            ? `${catalogItems.length} výsledků`
+            : isAll
+              ? `${catalogItems.length} položek ze všech ${types.length} kategorií${supplierFilter ? ` · ${escapeHtml(supplierFilter)}` : ''} · seřazeno podle ceny`
+              : t
+              ? `${catalogItems.length} položek · ceny bez DPH i s DPH`
+              : ''
+        }</p>
+      </div>
+      <div class="supplier-legend" aria-label="Dodavatelé v seznamu">
+        ${[...supplierCounts.entries()].map(([s, n]) => `${supplierBadge(s)}<span class="legend-n">${n}</span>`).join('')}
+      </div>
+    </div>
+    ${relatedStripHtml()}
+    <div class="product-grid">
+      ${
+        catalogLoading
+          ? `<div class="empty">Načítám produkty…</div>`
+          : catalogError
+            ? `<div class="empty error">${escapeHtml(catalogError)}</div>`
+            : !catalogItems.length
+              ? `<div class="empty">Žádné produkty</div>`
+              : catalogItems.slice(0, renderLimit).map((p) => productCardHtml(p)).join('')
+      }
+    </div>
+    ${moreHtml()}`
+  observeMore()
+}
+
+// Progressive rendering: PAGE_SIZE cards at a time; the next batch is appended
+// (not re-rendered) when the sentinel scrolls near the viewport.
+function moreHtml(): string {
+  if (catalogLoading || catalogError || renderLimit >= catalogItems.length) return ''
+  return `<div class="load-more" data-more>
+    <button type="button" class="btn btn-outline" data-action="more">Zobrazit další (${Math.min(PAGE_SIZE, catalogItems.length - renderLimit)} z ${catalogItems.length - renderLimit} zbývajících)</button>
+  </div>`
+}
+
+let moreObserver: IntersectionObserver | null = null
+function observeMore() {
+  moreObserver?.disconnect()
+  const sentinel = region('main').querySelector('[data-more]')
+  if (!sentinel || !('IntersectionObserver' in window)) return
+  moreObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((e) => e.isIntersecting)) appendMore()
+    },
+    { rootMargin: '800px 0px' },
+  )
+  moreObserver.observe(sentinel)
+}
+
+function appendMore() {
+  if (renderLimit >= catalogItems.length) return
+  const grid = region('main').querySelector('.product-grid')
+  if (!grid) return
+  const next = catalogItems.slice(renderLimit, renderLimit + PAGE_SIZE)
+  renderLimit += next.length
+  grid.insertAdjacentHTML('beforeend', next.map((p) => productCardHtml(p)).join(''))
+  const old = region('main').querySelector('[data-more]')
+  if (old) old.outerHTML = moreHtml()
+  observeMore()
+}
+
+function renderDrawer() {
+  // Skip while closed — content is refreshed on open; keeps re-renders cheap.
+  if (!cartOpen && drawerEl.dataset.rendered) return
+  drawerEl.dataset.rendered = '1'
+  const body = region('drawer')
+  const scroll = body.scrollTop
+  body.innerHTML = quotePanelHtml(true)
+  body.scrollTop = scroll
+}
+
+function render() {
+  renderHeaderActions()
+  renderNav()
+  renderNotices()
+  renderMain()
+  renderDrawer()
+  if (searchEl.value !== searchQ && document.activeElement !== searchEl) searchEl.value = searchQ
+}
 
 async function togglePriceHistory(productId: string) {
   if (historyOpenId === productId) {
@@ -871,7 +1059,6 @@ async function togglePriceHistory(productId: string) {
     }
     if (historyOpenId === productId) render()
   }
-  // Prefetch history for quote lines when opening quote
 }
 
 async function prefetchCartHistory() {
@@ -889,87 +1076,155 @@ async function prefetchCartHistory() {
   )
 }
 
-function bindEvents() {
-  app.querySelectorAll('[data-history]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = (btn as HTMLElement).dataset.history
-      if (!id) return
-      void togglePriceHistory(id)
-    })
-  })
-  app.querySelectorAll<HTMLButtonElement>('[data-type]').forEach((btn) => {
-    btn.addEventListener('click', () => selectType(btn.dataset.type!))
-  })
-
-  const search = app.querySelector<HTMLInputElement>('[data-global-search]')
-  search?.addEventListener('input', () => {
-    searchQ = search.value
-    window.clearTimeout(searchTimer)
-    searchTimer = window.setTimeout(() => {
-      if (searchQ.trim()) {
-        viewMode = 'search'
-        selectedSlug = null
-      } else {
-        viewMode = 'browse'
-        if (!selectedSlug && types.length) selectedSlug = types[0].slug
-      }
-      void loadProductsForCurrent()
-    }, 280)
-  })
-
-  app.querySelector<HTMLSelectElement>('[data-supplier]')?.addEventListener('change', (e) => {
-    supplierFilter = (e.target as HTMLSelectElement).value
-    void loadProductsForCurrent()
-  })
-
-  app.querySelectorAll('[data-action="toggle-cart"]').forEach((el) => {
-    el.addEventListener('click', (e) => {
-      e.preventDefault()
-      cartOpen = !cartOpen
-      if (!cartOpen && viewMode === 'quote') viewMode = 'browse'
-      render()
-    })
-  })
-
-  app.querySelector('[data-action="open-quote"]')?.addEventListener('click', () => {
-    viewMode = 'quote'
-    void prefetchCartHistory().then(() => render())
-    cartOpen = true
-    render()
-  })
-
-  app.querySelector('[data-action="clear"]')?.addEventListener('click', clearAll)
-  app.querySelector('[data-action="copy-quote"]')?.addEventListener('click', () => void copyQuote())
-  app.querySelector('[data-action="csv-quote"]')?.addEventListener('click', downloadCsv)
-  app.querySelector('[data-action="print-quote"]')?.addEventListener('click', printQuote)
-  app.querySelector('[data-action="update-catalog"]')?.addEventListener('click', () => void triggerUpdate())
-
-  app.querySelectorAll<HTMLTextAreaElement>('[data-quote-note]').forEach((ta) => {
-    ta.addEventListener('change', () => saveNote(ta.value))
-    ta.addEventListener('blur', () => saveNote(ta.value))
-  })
-
-  app.querySelectorAll<HTMLButtonElement>('[data-add]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const id = btn.dataset.add!
-      const product = catalogItems.find((p) => p.id === id) || productsById.get(id)
-      if (product) addOne(product)
-    })
-  })
-
-  app.querySelectorAll<HTMLButtonElement>('[data-remove]').forEach((btn) => {
-    btn.addEventListener('click', () => setQty(btn.dataset.remove!, 0))
-  })
-
-  app.querySelectorAll<HTMLElement>('[data-qty]').forEach((el) => {
-    const id = el.dataset.qty!
-    el.querySelector('[data-dec]')?.addEventListener('click', () => setQty(id, (cart[id] || 0) - 1))
-    el.querySelector('[data-inc]')?.addEventListener('click', () => setQty(id, (cart[id] || 0) + 1))
-    el.querySelector('input')?.addEventListener('change', (e) => {
-      setQty(id, Number((e.target as HTMLInputElement).value))
-    })
+function openQuoteView() {
+  viewMode = 'quote'
+  setCartOpen(false)
+  render()
+  window.scrollTo({ top: 0 })
+  void prefetchCartHistory().then(() => {
+    if (viewMode === 'quote') render()
   })
 }
+
+// ── events (delegated once; regions re-render freely) ─────────────
+app.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement
+  const typeBtn = target.closest<HTMLElement>('[data-type]')
+  if (typeBtn) {
+    selectType(typeBtn.dataset.type!)
+    return
+  }
+  const historyBtn = target.closest<HTMLElement>('[data-history]')
+  if (historyBtn) {
+    void togglePriceHistory(historyBtn.dataset.history!)
+    return
+  }
+  const addBtn = target.closest<HTMLElement>('[data-add]')
+  if (addBtn) {
+    const id = addBtn.dataset.add!
+    const product = catalogItems.find((p) => p.id === id) || productsById.get(id)
+    if (product) addOne(product)
+    return
+  }
+  const removeBtn = target.closest<HTMLElement>('[data-remove]')
+  if (removeBtn) {
+    setQty(removeBtn.dataset.remove!, 0)
+    return
+  }
+  const qtyWrap = target.closest<HTMLElement>('[data-qty]')
+  if (qtyWrap && target.closest('[data-dec], [data-inc]')) {
+    const id = qtyWrap.dataset.qty!
+    setQty(id, (cart[id] || 0) + (target.closest('[data-inc]') ? 1 : -1))
+    return
+  }
+  const actionEl = target.closest<HTMLElement>('[data-action]')
+  if (!actionEl) return
+  switch (actionEl.dataset.action) {
+    case 'toggle-cart':
+      setCartOpen(!cartOpen)
+      break
+    case 'close-cart':
+      setCartOpen(false)
+      break
+    case 'open-quote':
+      openQuoteView()
+      break
+    case 'clear':
+      if (window.confirm('Opravdu vymazat celou nabídku?')) clearAll()
+      break
+    case 'copy-quote':
+      void copyQuote()
+      break
+    case 'csv-quote':
+      downloadCsv()
+      break
+    case 'print-quote':
+      printQuote()
+      break
+    case 'update-catalog':
+      void triggerUpdate()
+      break
+    case 'more':
+      appendMore()
+      break
+  }
+})
+
+app.addEventListener('change', (e) => {
+  const target = e.target as HTMLElement
+  if (target.matches('[data-supplier]')) {
+    supplierFilter = (target as HTMLSelectElement).value
+    void loadProductsForCurrent()
+    return
+  }
+  if (target.matches('[data-qty] input')) {
+    const id = target.closest<HTMLElement>('[data-qty]')!.dataset.qty!
+    setQty(id, Number((target as HTMLInputElement).value))
+    return
+  }
+  if (target.matches('[data-quote-note]')) saveNote((target as HTMLTextAreaElement).value)
+})
+
+app.addEventListener('focusout', (e) => {
+  const target = e.target as HTMLElement
+  if (target.matches('[data-quote-note]')) saveNote((target as HTMLTextAreaElement).value)
+})
+
+searchEl.addEventListener('input', () => {
+  searchQ = searchEl.value
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => {
+    if (searchQ.trim()) {
+      viewMode = 'search'
+      selectedSlug = null
+    } else {
+      viewMode = 'browse'
+      if (!selectedSlug) selectedSlug = ALL_SLUG
+    }
+    void loadProductsForCurrent()
+  }, 280)
+})
+
+window.addEventListener('hashchange', () => {
+  const slug = slugFromHash() || ALL_SLUG
+  if (slug !== selectedSlug && (slug === ALL_SLUG || types.some((t) => t.slug === slug))) selectType(slug)
+})
+
+// Broken/missing thumbnails → supplier-coloured letter tile (error does not bubble → capture).
+app.addEventListener(
+  'error',
+  (e) => {
+    const img = e.target as HTMLElement
+    if (!(img instanceof HTMLImageElement) || !img.dataset.fallback) return
+    const tile = document.createElement('div')
+    tile.className = `img-fallback sup-${img.dataset.sup || 'other'}`
+    tile.textContent = img.dataset.fallback
+    img.replaceWith(tile)
+  },
+  true,
+)
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && cartOpen) {
+    e.preventDefault()
+    setCartOpen(false)
+    return
+  }
+  // simple focus trap inside the open drawer
+  if (e.key === 'Tab' && cartOpen) {
+    const focusables = [...drawerEl.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input, textarea, select')]
+    if (!focusables.length) return
+    const first = focusables[0]
+    const last = focusables[focusables.length - 1]
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+})
 
 render()
 void loadBootstrap()
