@@ -22,6 +22,8 @@ export type ChatHost = {
   getContext?: () => unknown
   getQuote?: () => { id: string; qty: number }[]
   applyAction?: (a: ChatAction) => { undo?: () => void } | void
+  /** Manager user id → chat history / model choice stored per user */
+  userId?: string
 }
 
 const HISTORY_KEY = 'acc-db-chat-v1'
@@ -129,7 +131,7 @@ export function setRichText(target: HTMLElement, text: string) {
 
 function loadHistory(): Msg[] {
   try {
-    const raw = sessionStorage.getItem(HISTORY_KEY)
+    const raw = sessionStorage.getItem(historyKey)
     const list = raw ? (JSON.parse(raw) as Msg[]) : []
     return Array.isArray(list)
       ? list.filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string').slice(-40)
@@ -302,7 +304,27 @@ function limitRing(m: ModelOption, size: number, getModel: () => ModelOption | u
 
 /** host.getContext: compact snapshot of the user's current screen, sent with every question;
  *  host.getQuote: the quote as [{id, qty}] for the quote tools; host.applyAction: executes model actions. */
+// per-user storage keys (set in mountChatWidget from host.userId)
+let historyKey = HISTORY_KEY
+let modelKey = MODEL_KEY
+
 export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
+  if (host.userId) {
+    historyKey = `${HISTORY_KEY}:${host.userId}`
+    modelKey = `${MODEL_KEY}:${host.userId}`
+    // one-time move of the old shared keys to this user
+    for (const [store, base, key] of [[sessionStorage, HISTORY_KEY, historyKey], [localStorage, MODEL_KEY, modelKey]] as const) {
+      try {
+        const old = store.getItem(base)
+        if (old !== null) {
+          if (store.getItem(key) === null) store.setItem(key, old)
+          store.removeItem(base)
+        }
+      } catch {
+        /* storage unavailable */
+      }
+    }
+  }
   let messages: Msg[] = loadHistory()
   let loading = false
   let models: ModelOption[] = []
@@ -311,7 +333,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   let countdownTimer: number | undefined
   let selectedModel: string = (() => {
     try {
-      return localStorage.getItem(MODEL_KEY) || ''
+      return localStorage.getItem(modelKey) || ''
     } catch {
       return ''
     }
@@ -404,7 +426,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
 
   function save() {
     try {
-      sessionStorage.setItem(HISTORY_KEY, JSON.stringify(messages.filter((m) => !m.error).slice(-40)))
+      sessionStorage.setItem(historyKey, JSON.stringify(messages.filter((m) => !m.error).slice(-40)))
     } catch {
       /* private mode / quota */
     }
@@ -575,7 +597,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   function selectModel(id: string) {
     selectedModel = id
     try {
-      localStorage.setItem(MODEL_KEY, selectedModel)
+      localStorage.setItem(modelKey, selectedModel)
     } catch {
       /* ignore */
     }

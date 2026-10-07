@@ -23,8 +23,25 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 }
 
 /** Logged-in Manager user (when the server-side gate is on). */
-let me: { name: string; email: string } | null = null
+let me: { id?: string; name: string; email: string } | null = null
 let managerUrl = '/'
+
+/** Quote, note and chat are stored per Manager user: `<key>:<userId>` (unkeyed only when the auth gate is off). */
+let userId = ''
+const userKey = (base: string) => (userId ? `${base}:${userId}` : base)
+
+/** one-time move of the old shared (unkeyed) data to the current user, then the old key is deleted */
+function migrateToUser(store: Storage, base: string) {
+  if (!userId) return
+  try {
+    const old = store.getItem(base)
+    if (old === null) return
+    if (store.getItem(userKey(base)) === null) store.setItem(userKey(base), old)
+    store.removeItem(base)
+  } catch {
+    /* storage unavailable */
+  }
+}
 
 async function loadMe() {
   try {
@@ -33,9 +50,18 @@ async function loadMe() {
     const data = (await res.json()) as { user?: { name: string; email: string } | null; managerUrl?: string }
     me = data.user || null
     managerUrl = data.managerUrl || '/'
+    if (me?.id) {
+      userId = me.id
+      migrateToUser(localStorage, STORAGE_KEY)
+      migrateToUser(localStorage, NOTE_KEY)
+      cart = loadCart()
+      quoteNote = loadNote()
+    }
     renderHeaderActions()
   } catch {
     /* optional */
+  } finally {
+    startChat()
   }
 }
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -76,7 +102,7 @@ function escapeAttr(value: string): string {
 
 function loadCart(): CartMap {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(userKey(STORAGE_KEY))
     if (!raw) return {}
     const parsed = JSON.parse(raw) as CartMap
     return parsed && typeof parsed === 'object' ? parsed : {}
@@ -86,15 +112,15 @@ function loadCart(): CartMap {
 }
 
 function saveCart() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cart))
+  localStorage.setItem(userKey(STORAGE_KEY), JSON.stringify(cart))
 }
 
 function loadNote(): string {
-  return localStorage.getItem(NOTE_KEY) || ''
+  return localStorage.getItem(userKey(NOTE_KEY)) || ''
 }
 
 function saveNote(v: string) {
-  localStorage.setItem(NOTE_KEY, v)
+  localStorage.setItem(userKey(NOTE_KEY), v)
   quoteNote = v
 }
 
@@ -1494,4 +1520,10 @@ function applyChatAction(a: ChatAction): { undo?: () => void } | void {
   }
 }
 
-mountChatWidget(apiFetch, { getContext: chatContext, getQuote: chatQuote, applyAction: applyChatAction })
+// the chat starts once the user is known (its history is stored per user)
+let chatStarted = false
+function startChat() {
+  if (chatStarted) return
+  chatStarted = true
+  mountChatWidget(apiFetch, { getContext: chatContext, getQuote: chatQuote, applyAction: applyChatAction, userId })
+}

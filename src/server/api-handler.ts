@@ -35,7 +35,7 @@ function loadCategoryMap() {
 
 type GateLike = {
   enabled: boolean
-  userFor: (req: IncomingMessage) => { name: string; email: string; labels: string[] } | null
+  userFor: (req: IncomingMessage) => { id: string; name: string; email: string; labels: string[] } | null
   managerUrl: string
 }
 
@@ -283,7 +283,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         const u = gate?.userFor(req)
         json(res, 200, {
           auth: !!gate?.enabled,
-          user: u ? { name: u.name, email: u.email, labels: u.labels } : null,
+          user: u ? { id: u.id, name: u.name, email: u.email, labels: u.labels } : null,
           managerUrl: gate?.managerUrl || '/',
         })
         return
