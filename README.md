@@ -46,8 +46,8 @@ Aplikace je dostupná jen uživatelům přihlášeným v Contsystem Manageru (`c
 | GET/HEAD | `/api/img?url=` | proxy + cache náhledů (jen https z ALSAP / Trans-Technik / Hydrotruck, pouze rastrové obrázky, max 6 MB; `.jpg` 404 → zkusí `.webp`) |
 | POST | `/api/catalog/update` | spustí scrape+seed (volitelně `X-Update-Token`) |
 | GET | `/api/catalog/update/status` | stav jobu |
-| POST | `/api/chat` | AI asistent Kapitán Karel: `{ messages: [{ role: 'user'|'assistant', content }] }` → NDJSON stream z Ollamy |
-| GET | `/api/chat/status` | je Ollama dostupná a má model? |
+| POST | `/api/chat` | AI asistent Kapitán Karel: `{ messages, context?, model? }` → NDJSON stream (Ollama nebo GroqCloud) |
+| GET | `/api/chat/status` | dostupné modely (`groq:*`, `ollama:*`) + výchozí |
 
 Token: `ACC_DB_UPDATE_TOKEN` v `.env`. Pokud není nastaven, update je povolen (vhodné jen pro privátní deploy).
 
@@ -98,6 +98,7 @@ Plovoucí tlačítko s maskotem „Kapitán Karel“ (pirátský robot, `src/ass
   docker network create ollama            # jednou
   docker network connect ollama ollama    # po každém novém vytvoření kontejneru ollama (nebo `docker run --network ollama …`)
   ```
+- **GroqCloud**: když je v `.env` na serveru `GROQ_API_KEY`, nabídne panel v hlavičce přepínač modelu (volba se pamatuje v `localStorage`, klíč `acc-db-chat-model`). Seznam = `GROQ_MODELS` (výchozí `openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b`; první dostupný je výchozí) + lokální Ollama. Server volá `https://api.groq.com/openai/v1/chat/completions` (`stream: true`, SSE) a převádí stream na stejné NDJSON `{message:{content}}` jako u Ollamy; klíč se do prohlížeče nikdy nedostane. Povolené jsou jen modely ze seznamu (`GET /api/chat/status` → `models`, `default`). Chyby Groq česky (401 neplatný klíč, 429 vyčerpaný limit + `Retry-After`).
 - Historie konverzace je jen v `sessionStorage` prohlížeče; nic se neukládá na server.
 
 ## Poznámky

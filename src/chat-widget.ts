@@ -8,10 +8,12 @@ import karelHead from './assets/kapitan-karel-head.png'
 import karelFull from './assets/kapitan-karel.png'
 
 type Role = 'user' | 'assistant'
-type Msg = { role: Role; content: string; error?: boolean }
+type Msg = { role: Role; content: string; error?: boolean; model?: string }
+type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq'; available: boolean }
 type ApiFetch = (path: string, init?: RequestInit) => Promise<Response>
 
 const HISTORY_KEY = 'acc-db-chat-v1'
+const MODEL_KEY = 'acc-db-chat-model'
 const MAX_SEND = 20
 const MAX_LEN = 4000
 const GENERIC_ERROR = 'Došlo k chybě při komunikaci se serverem.'
@@ -51,7 +53,14 @@ function loadHistory(): Msg[] {
 export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) {
   let messages: Msg[] = loadHistory()
   let loading = false
-  let statusChecked = false
+  let models: ModelOption[] = []
+  let selectedModel: string = (() => {
+    try {
+      return localStorage.getItem(MODEL_KEY) || ''
+    } catch {
+      return ''
+    }
+  })()
 
   const root = el('div', 'chat-widget no-print')
 
@@ -72,12 +81,21 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
   const head = el('header', 'chat-head')
   const titleWrap = el('div', 'chat-title-wrap')
   const titleText = el('div', 'chat-title-text')
-  titleText.append(el('h2', 'chat-title', NAME), el('span', 'chat-subtitle', 'AI asistent katalogu'))
+  const modelSelect = el('select', 'chat-model')
+  modelSelect.setAttribute('aria-label', 'Model AI, který odpovídá')
+  modelSelect.title = 'Vyberte model AI'
+  modelSelect.append(new Option('Načítám modely…', ''))
+  modelSelect.disabled = true
+  titleText.append(el('h2', 'chat-title', NAME), modelSelect)
   titleWrap.append(avatar('chat-head-avatar'), titleText)
   const headActions = el('div', 'chat-head-actions')
-  const resetBtn = el('button', 'chat-icon-btn chat-reset', 'Nová konverzace')
+  const resetBtn = el('button', 'chat-icon-btn chat-reset')
   resetBtn.type = 'button'
-  resetBtn.title = 'Smazat konverzaci a začít znovu'
+  resetBtn.title = 'Nová konverzace (smaže dosavadní zprávy)'
+  resetBtn.setAttribute('aria-label', 'Nová konverzace')
+  // static icon markup (no user/model data) — „new chat“ pencil-in-square
+  resetBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M17.5 3.5a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4 8.5-8.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>'
   const closeBtn = el('button', 'chat-icon-btn chat-close', '✕')
   closeBtn.type = 'button'
   closeBtn.title = 'Zavřít'
@@ -124,6 +142,7 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
   function bubble(m: Msg) {
     const row = el('div', `chat-row ${m.role === 'user' ? 'from-user' : 'from-assistant'}`)
     const b = el('div', `chat-bubble${m.error ? ' is-error' : ''}`, m.content)
+    if (m.model) b.title = `Odpověděl: ${m.model}`
     if (m.role === 'assistant') row.append(avatar('chat-msg-avatar'))
     row.append(b)
     return { row, b }
@@ -150,6 +169,7 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
     input.disabled = v
     sendBtn.disabled = v
     resetBtn.hidden = !messages.length || v
+    modelSelect.disabled = v || models.length < 2
     panel.classList.toggle('is-loading', v)
   }
 
@@ -158,18 +178,63 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
     notice.hidden = !text
   }
 
+  const currentModel = () => models.find((m) => m.id === selectedModel)
+
+  function updateModelNotice() {
+    const m = currentModel()
+    if (!models.length) return
+    if (!models.some((x) => x.available)) showNotice(`${NAME} zatím není dostupný (žádný model AI teď neodpovídá).`)
+    else if (m && !m.available)
+      showNotice(
+        m.provider === 'ollama'
+          ? `Lokální model teď neběží (Ollama na serveru). Vyberte prosím GroqCloud.`
+          : `${m.label} teď není dostupný. Vyberte prosím jiný model.`,
+      )
+    else showNotice(null)
+  }
+
+  function renderModels() {
+    modelSelect.replaceChildren(
+      ...models.map((m) => {
+        const o = new Option(m.available ? m.label : `${m.label} (nedostupný)`, m.id)
+        o.disabled = !m.available && m.id !== selectedModel
+        return o
+      }),
+    )
+    modelSelect.value = selectedModel
+    modelSelect.disabled = loading || models.length < 2
+  }
+
   async function checkStatus() {
-    if (statusChecked) return
-    statusChecked = true
     try {
       const res = await apiFetch('/chat/status')
       if (!res.ok) return
-      const s = (await res.json()) as { available?: boolean; error?: string | null }
-      showNotice(s.available ? null : s.error || `${NAME} zatím není dostupný.`)
+      const s = (await res.json()) as { models?: ModelOption[]; default?: string; available?: boolean; error?: string | null }
+      models = Array.isArray(s.models) ? s.models : []
+      if (!models.length) {
+        showNotice(s.available ? null : s.error || `${NAME} zatím není dostupný.`)
+        return
+      }
+      const stored = models.find((m) => m.id === selectedModel)
+      // keep the user's choice while it works; otherwise the server default (best available Groq model, else local)
+      if (!stored || !stored.available) selectedModel = s.default || models.find((m) => m.available)?.id || models[0].id
+      renderModels()
+      updateModelNotice()
     } catch {
       /* the send itself reports errors */
     }
   }
+
+  modelSelect.addEventListener('change', () => {
+    selectedModel = modelSelect.value
+    try {
+      localStorage.setItem(MODEL_KEY, selectedModel)
+    } catch {
+      /* ignore */
+    }
+    updateModelNotice()
+    input.focus()
+  })
 
   function open() {
     panel.hidden = false
@@ -221,14 +286,16 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
       const res = await apiFetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history, context: safeContext() }),
+        body: JSON.stringify({ messages: history, context: safeContext(), ...(selectedModel ? { model: selectedModel } : {}) }),
       })
       if (!res.ok || !res.body) {
         const data = (await res.json().catch(() => ({}))) as { error?: string }
         fail(data.error || GENERIC_ERROR)
         return
       }
-      showNotice(null)
+      updateModelNotice()
+      answer.model = currentModel()?.label
+      if (answer.model) b.title = `Odpověděl: ${answer.model}`
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''

@@ -1,6 +1,6 @@
 /**
- * AI assistant: POST /acc-db/api/chat → proxies the conversation to a local Ollama
- * (`/api/chat`, stream: true) and passes its NDJSON stream straight through to the browser.
+ * AI assistant „Kapitán Karel“: POST /acc-db/api/chat → local Ollama (`/api/chat`, NDJSON) or GroqCloud
+ * (OpenAI-compatible `/chat/completions`, SSE). Both are streamed to the browser as NDJSON `{message:{content}}` lines.
  * Runs behind the auth gate (only logged-in Manager users with an allowed role).
  *
  * Env:
@@ -9,6 +9,10 @@
  *   OLLAMA_TIMEOUT_MS  max. duration of one answer, default 150000
  *   OLLAMA_NUM_CTX  optional context window in tokens (default: Ollama's own; changing it reloads the model)
  *   OLLAMA_WARMUP=off  disable pre-evaluating the system prompt at server start
+ *   GROQ_API_KEY    enables GroqCloud models (server-side only, never sent to the browser)
+ *   GROQ_MODELS     comma separated Groq model ids, default openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b
+ *                   (the first available one is the default in the chat panel)
+ *   GROQ_TIMEOUT_MS max. duration of one Groq answer, default 60000
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -157,40 +161,131 @@ export function validateMessages(body: unknown): ChatMessage[] {
   return msgs
 }
 
+export type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq'; model: string; available: boolean }
+
+const GROQ_DEFAULT_MODELS = 'openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b'
+const GROQ_LABELS: Record<string, string> = {
+  'openai/gpt-oss-120b': 'GroqCloud – GPT-OSS 120B',
+  'openai/gpt-oss-20b': 'GroqCloud – GPT-OSS 20B (rychlý)',
+  'qwen/qwen3.8-27b': 'GroqCloud – Qwen 3.8 27B',
+}
+const GROQ_LIST_TTL_MS = 10 * 60_000
+
+function groqLabel(model: string) {
+  return GROQ_LABELS[model] || `GroqCloud – ${model.split('/').pop()}`
+}
+
+function ollamaLabel(model: string) {
+  const m = model.match(/^qwen2\.5:(\d+(?:\.\d+)?)b$/i)
+  return m ? `Lokální – Qwen 2.5 ${m[1]}B (server)` : `Lokální – ${model} (server)`
+}
+
+/** Model-specific Groq request fields: no visible reasoning, small reasoning budget (fast answers). */
+function groqExtras(model: string): Record<string, unknown> {
+  if (model.startsWith('openai/gpt-oss')) return { reasoning_effort: 'low', include_reasoning: false }
+  if (/qwen3/i.test(model)) return { reasoning_effort: 'none' }
+  return {}
+}
+
+const errText = (err: unknown) => (err instanceof Error ? (err.cause as Error)?.message || err.message : String(err))
+
 export function createChatHandler(env: Record<string, string | undefined>) {
+  // ── Ollama (local, on the VPS) ──
   const baseUrl = (env.OLLAMA_URL || 'http://ollama:11434').trim().replace(/\/+$/, '')
   const model = (env.OLLAMA_MODEL || 'qwen2.5:3b').trim()
   const totalTimeout = Math.max(5_000, Number(env.OLLAMA_TIMEOUT_MS) || 150_000)
   const numCtx = Number(env.OLLAMA_NUM_CTX) > 0 ? Math.max(2048, Math.min(32768, Number(env.OLLAMA_NUM_CTX))) : null
   const options = numCtx ? { num_ctx: numCtx } : undefined
+  const ollamaId = `ollama:${model}`
 
-  /** GET /api/chat/status — is Ollama reachable and does it have the model? */
-  async function status(res: ServerResponse) {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), STATUS_TIMEOUT_MS)
+  // ── GroqCloud (OpenAI-compatible API); the key never leaves the server ──
+  const groqKey = (env.GROQ_API_KEY || '').trim()
+  const groqUrl = (env.GROQ_URL || 'https://api.groq.com/openai/v1').trim().replace(/\/+$/, '')
+  const groqModels = (env.GROQ_MODELS || GROQ_DEFAULT_MODELS)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const groqTimeout = Math.max(5_000, Number(env.GROQ_TIMEOUT_MS) || 60_000)
+  let groqListed: { at: number; ids: Set<string> } | null = null
+
+  /** Which configured Groq models this key can really use (cached 10 min; unknown → assume yes). */
+  async function groqAvailableIds(): Promise<Set<string> | null> {
+    if (!groqKey) return new Set()
+    if (groqListed && Date.now() - groqListed.at < GROQ_LIST_TTL_MS) return groqListed.ids
     try {
-      const r = await fetch(`${baseUrl}/api/tags`, { signal: ctrl.signal })
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const data = (await r.json()) as { models?: { name?: string; model?: string }[] }
-      const names = (data.models || []).map((m) => m.name || m.model || '')
-      const want = model.includes(':') ? model : `${model}:latest`
-      const hasModel = names.includes(model) || names.includes(want)
-      sendJson(res, 200, {
-        available: hasModel,
-        model,
-        error: hasModel ? null : `Kapitán Karel zatím není dostupný (model ${model} na serveru chybí).`,
+      const r = await fetch(`${groqUrl}/models`, {
+        headers: { Authorization: `Bearer ${groqKey}` },
+        signal: AbortSignal.timeout(STATUS_TIMEOUT_MS + 1_000),
       })
-    } catch {
-      sendJson(res, 200, { available: false, model, error: MSG_UNAVAILABLE })
-    } finally {
-      clearTimeout(t)
+      if (r.status === 401 || r.status === 403) {
+        console.warn(`[acc-db chat] Groq rejected the API key (HTTP ${r.status})`)
+        groqListed = { at: Date.now() - GROQ_LIST_TTL_MS + 60_000, ids: new Set() } // re-check in 1 min
+        return groqListed.ids
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const data = (await r.json()) as { data?: { id: string; active?: boolean }[] }
+      groqListed = { at: Date.now(), ids: new Set((data.data || []).filter((m) => m.active !== false).map((m) => m.id)) }
+      return groqListed.ids
+    } catch (err) {
+      console.warn('[acc-db chat] Groq model list failed:', errText(err))
+      return null
     }
   }
 
-  /** POST /api/chat — streams Ollama's NDJSON (one JSON object per line, `message.content` deltas). */
+  async function ollamaAvailable(): Promise<boolean> {
+    try {
+      const r = await fetch(`${baseUrl}/api/tags`, { signal: AbortSignal.timeout(STATUS_TIMEOUT_MS) })
+      if (!r.ok) return false
+      const data = (await r.json()) as { models?: { name?: string; model?: string }[] }
+      const names = (data.models || []).map((m) => m.name || m.model || '')
+      return names.includes(model) || names.includes(model.includes(':') ? model : `${model}:latest`)
+    } catch {
+      return false
+    }
+  }
+
+  /** Whitelist of selectable models (Groq first when a key is configured). */
+  function modelList(): Omit<ModelOption, 'available'>[] {
+    return [
+      ...(groqKey ? groqModels.map((m) => ({ id: `groq:${m}`, label: groqLabel(m), provider: 'groq' as const, model: m })) : []),
+      { id: ollamaId, label: ollamaLabel(model), provider: 'ollama' as const, model },
+    ]
+  }
+
+  /** GET /api/chat/status — selectable models with availability + the default. */
+  async function status(res: ServerResponse) {
+    const [ollamaOk, groqIds] = await Promise.all([ollamaAvailable(), groqAvailableIds()])
+    const models: ModelOption[] = modelList().map((m) => ({
+      ...m,
+      available: m.provider === 'ollama' ? ollamaOk : groqIds === null || groqIds.has(m.model),
+    }))
+    const def = models.find((m) => m.available) || models[0]
+    sendJson(res, 200, {
+      models,
+      default: def.id,
+      available: models.some((m) => m.available),
+      // legacy fields (local model)
+      model,
+      error: models.some((m) => m.available) ? null : MSG_UNAVAILABLE,
+    })
+  }
+
+  function promptMessages(messages: ChatMessage[], context: string | null) {
+    const last = messages[messages.length - 1].content
+    // The static system prompt stays the exact same prefix → Ollama reuses its evaluated KV cache.
+    // The screen context rides in the LAST user message, so earlier turns stay cacheable too.
+    return [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...messages.slice(0, -1),
+      { role: 'user', content: context ? withContext(context, last) : last },
+    ]
+  }
+
+  /** POST /api/chat — always answers with NDJSON lines `{"message":{"content":"…"}}`, last one `{"done":true}`. */
   async function chat(req: IncomingMessage, res: ServerResponse) {
     let messages: ChatMessage[]
     let context: string | null
+    let choice: Omit<ModelOption, 'available'>
     try {
       const raw = await readBody(req, MAX_BODY_BYTES)
       let body: unknown
@@ -201,21 +296,37 @@ export function createChatHandler(env: Record<string, string | undefined>) {
       }
       messages = validateMessages(body)
       context = validateContext(body)
+      const list = modelList()
+      const wanted = (body as { model?: unknown }).model
+      if (wanted !== undefined && wanted !== null && wanted !== '') {
+        const found = typeof wanted === 'string' ? list.find((m) => m.id === wanted) : undefined
+        if (!found) throw new HttpError(400, 'Vybraný model není k dispozici. Vyberte prosím jiný.')
+        choice = found
+      } else {
+        choice = list[0]
+      }
     } catch (err) {
       if (err instanceof HttpError) return sendJson(res, err.status, { error: err.message })
       throw err
     }
 
+    const isGroq = choice.provider === 'groq'
     const ctrl = new AbortController()
     let timedOut = false
-    const total = setTimeout(() => {
-      timedOut = true
-      ctrl.abort()
-    }, totalTimeout)
-    let firstByte: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
-      timedOut = true
-      ctrl.abort()
-    }, FIRST_BYTE_TIMEOUT_MS)
+    const total = setTimeout(
+      () => {
+        timedOut = true
+        ctrl.abort()
+      },
+      isGroq ? groqTimeout : totalTimeout,
+    )
+    let firstByte: ReturnType<typeof setTimeout> | undefined = setTimeout(
+      () => {
+        timedOut = true
+        ctrl.abort()
+      },
+      isGroq ? 30_000 : FIRST_BYTE_TIMEOUT_MS,
+    )
     const clearFirst = () => {
       if (firstByte) clearTimeout(firstByte)
       firstByte = undefined
@@ -226,72 +337,133 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     }
     res.on('close', onClose)
 
+    const startStream = () => {
+      res.statusCode = 200
+      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('X-Accel-Buffering', 'no')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('X-Chat-Model', choice.id)
+      res.flushHeaders()
+    }
+    const line = (o: unknown) => {
+      if (!res.destroyed) res.write(JSON.stringify(o) + '\n')
+    }
+    const brokenMsg = () => (timedOut ? 'Odpověď trvala příliš dlouho a byla přerušena.' : 'Spojení s Kapitánem Karlem bylo přerušeno.')
+
     try {
       let upstream: Response
       try {
-        upstream = await fetch(`${baseUrl}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model,
-            stream: true,
-            ...(options ? { options } : {}),
-            // The static system prompt stays the exact same prefix → Ollama reuses its evaluated KV cache.
-            // The screen context rides in the LAST user message, so earlier turns stay cacheable too.
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              ...messages.slice(0, -1),
-              { role: 'user', content: context ? withContext(context, messages[messages.length - 1].content) : messages[messages.length - 1].content },
-            ],
-          }),
-          signal: ctrl.signal,
-        })
+        upstream = isGroq
+          ? await fetch(`${groqUrl}/chat/completions`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+              body: JSON.stringify({
+                model: choice.model,
+                stream: true,
+                max_completion_tokens: 1024,
+                temperature: 0.4,
+                ...groqExtras(choice.model),
+                messages: promptMessages(messages, context),
+              }),
+              signal: ctrl.signal,
+            })
+          : await fetch(`${baseUrl}/api/chat`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model, stream: true, ...(options ? { options } : {}), messages: promptMessages(messages, context) }),
+              signal: ctrl.signal,
+            })
       } catch (err) {
         if (res.destroyed) return
-        console.warn('[acc-db chat] Ollama unreachable:', err instanceof Error ? (err.cause as Error)?.message || err.message : err)
-        return sendJson(res, timedOut ? 504 : 503, {
-          error: timedOut ? 'Kapitán Karel neodpověděl včas. Zkuste to prosím znovu.' : MSG_UNAVAILABLE,
+        console.warn(`[acc-db chat] ${isGroq ? 'Groq' : 'Ollama'} unreachable:`, errText(err))
+        if (timedOut) return sendJson(res, 504, { error: 'Kapitán Karel neodpověděl včas. Zkuste to prosím znovu.' })
+        return sendJson(res, 503, {
+          error: isGroq ? 'GroqCloud je teď nedostupný. Zkuste to za chvíli nebo přepněte na lokální model.' : MSG_UNAVAILABLE,
         })
       }
 
       if (!upstream.ok || !upstream.body) {
         const text = await upstream.text().catch(() => '')
-        console.warn(`[acc-db chat] Ollama HTTP ${upstream.status}: ${text.slice(0, 200)}`)
         clearFirst()
+        console.warn(`[acc-db chat] ${isGroq ? 'Groq' : 'Ollama'} HTTP ${upstream.status}: ${text.slice(0, 200)}`)
+        if (isGroq) {
+          const st = upstream.status
+          if (st === 401 || st === 403) return sendJson(res, 502, { error: 'GroqCloud odmítl API klíč (neplatný nebo zablokovaný). Přepněte prosím na lokální model.' })
+          if (st === 429) {
+            const ra = upstream.headers.get('retry-after')
+            if (ra) res.setHeader('Retry-After', ra)
+            return sendJson(res, 429, {
+              error: `GroqCloud: vyčerpaný limit požadavků nebo tokenů${ra ? ` (zkuste to znovu za ${Math.ceil(Number(ra)) || ra} s)` : ''}. Zkuste to za chvíli nebo přepněte na lokální model.`,
+            })
+          }
+          if (st === 404) return sendJson(res, 503, { error: `Model ${choice.model} teď v GroqCloud není dostupný. Vyberte prosím jiný.` })
+          if (st === 413) return sendJson(res, 400, { error: 'Konverzace je pro GroqCloud příliš dlouhá. Začněte prosím novou konverzaci.' })
+          return sendJson(res, 502, { error: 'GroqCloud vrátil chybu. Zkuste to prosím znovu nebo přepněte model.' })
+        }
         if (upstream.status === 404) {
           return sendJson(res, 503, { error: `Kapitán Karel zatím není dostupný (model ${model} na serveru chybí).` })
         }
         return sendJson(res, 502, { error: 'Kapitán Karel narazil na chybu. Zkuste to prosím znovu.' })
       }
 
-      res.statusCode = 200
-      res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8')
-      res.setHeader('Cache-Control', 'no-store')
-      res.setHeader('X-Accel-Buffering', 'no')
-      res.setHeader('X-Content-Type-Options', 'nosniff')
-      res.flushHeaders()
-
+      startStream()
       const reader = upstream.body.getReader()
       try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          clearFirst()
-          if (res.destroyed) break
-          res.write(value)
+        if (!isGroq) {
+          // Ollama already speaks NDJSON with message.content → pass through unchanged
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            clearFirst()
+            if (res.destroyed) break
+            res.write(value)
+          }
+        } else {
+          // Groq: SSE `data: {choices:[{delta:{content}}]}` … `data: [DONE]` → NDJSON
+          const dec = new TextDecoder()
+          let buf = ''
+          let finished = false
+          const handle = (raw: string) => {
+            const l = raw.trim()
+            if (!l.startsWith('data:')) return
+            const data = l.slice(5).trim()
+            if (data === '[DONE]') {
+              finished = true
+              return
+            }
+            let o: { choices?: { delta?: { content?: string }; finish_reason?: string | null }[]; error?: { message?: string } }
+            try {
+              o = JSON.parse(data)
+            } catch {
+              return
+            }
+            if (o.error) {
+              console.warn('[acc-db chat] Groq stream error:', o.error.message)
+              line({ error: 'GroqCloud přerušil odpověď. Zkuste to prosím znovu.', done: true })
+              finished = true
+              return
+            }
+            const c = o.choices?.[0]?.delta?.content
+            if (c) line({ message: { role: 'assistant', content: c }, done: false })
+          }
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            clearFirst()
+            if (res.destroyed) break
+            buf += dec.decode(value, { stream: true })
+            const parts = buf.split('\n')
+            buf = parts.pop() || ''
+            for (const p of parts) handle(p)
+            if (finished) break
+          }
+          if (buf) handle(buf)
+          line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id })
         }
       } catch {
         // aborted (timeout / client gone) or upstream broke mid-answer → tell the client in-band
-        if (!res.destroyed) {
-          res.write(
-            '\n' +
-              JSON.stringify({
-                error: timedOut ? 'Odpověď trvala příliš dlouho a byla přerušena.' : 'Spojení s Kapitánem Karlem bylo přerušeno.',
-                done: true,
-              }) +
-              '\n',
-          )
-        }
+        if (!res.destroyed) res.write('\n' + JSON.stringify({ error: brokenMsg(), done: true }) + '\n')
       }
       if (!res.destroyed) res.end()
     } finally {
@@ -302,7 +474,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
   }
 
   /** Pre-evaluate the (long, static) system prompt once at server start, so the first real question
-   *  doesn't pay ~40 s of CPU prompt evaluation. Best effort, errors ignored. */
+   *  to the local model doesn't pay ~40 s of CPU prompt evaluation. Best effort, errors ignored. */
   function warmup() {
     if ((env.OLLAMA_WARMUP || '').toLowerCase() === 'off') return
     const t = setTimeout(async () => {
@@ -325,11 +497,16 @@ export function createChatHandler(env: Record<string, string | undefined>) {
         await r.text()
         console.log(`[acc-db chat] warm-up ${r.ok ? 'done' : `HTTP ${r.status}`} in ${Date.now() - t0} ms`)
       } catch (err) {
-        console.warn('[acc-db chat] warm-up skipped:', err instanceof Error ? (err.cause as Error)?.message || err.message : err)
+        console.warn('[acc-db chat] warm-up skipped:', errText(err))
       }
     }, 3_000)
     t.unref?.()
   }
 
-  return { chat, status, warmup, config: { baseUrl, model, numCtx } }
+  return {
+    chat,
+    status,
+    warmup,
+    config: { baseUrl, model, numCtx, groq: groqKey ? { url: groqUrl, models: groqModels } : null },
+  }
 }

@@ -12,6 +12,7 @@ function apiPlugin(env: Record<string, string>): Plugin {
     console.log('[acc-db auth] gate OFF (set ACC_DB_AUTH=manager to require the Manager login)')
   }
   console.log(`[acc-db chat] Ollama ${env.OLLAMA_URL || 'http://ollama:11434'} · model ${env.OLLAMA_MODEL || 'qwen2.5:3b'}`)
+  console.log(`[acc-db chat] GroqCloud ${env.GROQ_API_KEY ? `on (key set) · models ${env.GROQ_MODELS || 'default list'}` : 'off (no GROQ_API_KEY)'}`)
   return {
     name: 'acc-db-api',
     configureServer(server) {
