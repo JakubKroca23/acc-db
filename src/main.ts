@@ -24,7 +24,6 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 
 /** Logged-in Manager user (when the server-side gate is on). */
 let me: { id?: string; name: string; email: string } | null = null
-let managerUrl = '/'
 
 /** Quote, note and chat are stored per Manager user: `<key>:<userId>` (unkeyed only when the auth gate is off). */
 let userId = ''
@@ -49,7 +48,6 @@ async function loadMe() {
     if (!res.ok) return
     const data = (await res.json()) as { user?: { name: string; email: string } | null; managerUrl?: string }
     me = data.user || null
-    managerUrl = data.managerUrl || '/'
     if (me?.id) {
       userId = me.id
       migrateToUser(localStorage, STORAGE_KEY)
@@ -992,14 +990,7 @@ function renderHeaderActions() {
   const title = n
     ? `Cenová nabídka: ${n} ${itemsWord(n)} (${pieces} ks) · celkem ${formatCzkExact(totalEx)} bez DPH / ${formatCzkExact(totalVat)} s DPH (vč. dopravy)`
     : 'Cenová nabídka je zatím prázdná'
-  const userLink = me
-    ? `<a class="hdr-user" href="${escapeAttr(managerUrl)}" title="${escapeAttr(`Přihlášen: ${me.name || me.email}${me.email && me.name ? ` (${me.email})` : ''} — zpět do Contsystem Manageru`)}">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        <span>${escapeHtml(me.name || me.email)}</span>
-      </a>`
-    : ''
   region('header-actions').innerHTML = `
-    ${userLink}
     <button type="button" class="quote-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" ${viewMode === 'quote' ? 'aria-current="page"' : ''}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z M14 3v5h5 M9 13h6 M9 17h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="quote-btn-label">Cenová nabídka</span>
