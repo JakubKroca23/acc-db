@@ -1,6 +1,8 @@
 FROM node:24-bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+# ca-certificates: without it Python's urllib cannot verify ALSAP / Trans-Technik TLS
+# and an in-app catalog update would scrape nothing from them.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

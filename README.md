@@ -33,6 +33,7 @@ npm run dev            # http://localhost:5173/acc-db/
 | GET | `/api/products?type=&supplier=&q=` | produkty |
 | GET | `/api/stats` | statistiky + poslední update |
 | GET | `/api/price-history?productId=` | historie změn ceny produktu |
+| GET/HEAD | `/api/img?url=` | proxy + cache náhledů (jen https z ALSAP / Trans-Technik / Hydrotruck, pouze rastrové obrázky, max 6 MB; `.jpg` 404 → zkusí `.webp`) |
 | POST | `/api/catalog/update` | spustí scrape+seed (volitelně `X-Update-Token`) |
 | GET | `/api/catalog/update/status` | stav jobu |
 
@@ -87,3 +88,18 @@ a `scripts/category-map.json` (vhodné pro vývoj a demo). Pro produkční sync 
 Hydrotruck scrape může selhat na SSL z některých sítí — skript zkusí insecure fallback;
 podložky pod podpěry / boxy na desky jsou na `hydrotruck.cz/podlozky-pod-patky-podper`.
 Pokud HT zůstane nedostupný, seed použije tržní odhad jen pro podkládací desky.
+
+## Náhledy (obrázky)
+
+- Scraper bere obrázek z `<picture><source srcset>` (Hydrotruck má u `<img src>` často
+  neexistující `.jpg`, reálný soubor je jen `.webp`), z lazy-load atributů
+  (`data-src`, `data-srcset`, `srcset`) a relativní URL převádí na absolutní.
+- Na konci scrape se každá URL obrázku ověří (HTTP 200 + magic bytes — Trans-Technik
+  neposílá `Content-Type`). Mrtvé URL se opraví (`.jpg`→`.webp`, `og:image` z detailu
+  produktu), jinak se uloží `null`. Přeskočení: `SKIP_IMAGE_VERIFY=1 npm run scrape`.
+- Frontend načítá všechny náhledy přes `/acc-db/api/img?url=…` (vlastní origin, cache
+  v paměti + `/tmp/acc-db-img-cache`, `Cache-Control: max-age=7 dní`), takže nevadí
+  hotlinking, chybějící `Content-Type` ani výpadky TLS u Hydrotrucku. Funguje i v tisku/PDF.
+- `category-map.json` → položka může mít `maxPages` (Hydrotruck čerpadla mají ~20 stran,
+  záměrně bereme jen první stranu). Když zdrojová stránka selže (HT občas vrací chybovou
+  stránku 500), převezmou se poslední známé produkty dané kategorie, aby je seed nesmazal.

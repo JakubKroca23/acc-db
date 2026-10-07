@@ -4,3 +4,4 @@ dist
 .DS_Store
 *.local
 scripts/catalog-update-status.json
+__pycache__/

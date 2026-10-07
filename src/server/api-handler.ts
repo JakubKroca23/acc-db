@@ -1,11 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client, TablesDB, Query } from 'node-appwrite'
 import { SHIPPING_RATES, SHIPPING_AVG } from '../shipping.ts'
 import { getCatalogUpdateStatus, startCatalogUpdate } from './catalog-update.ts'
+import { handleImageProxy } from './image-proxy.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -173,13 +175,17 @@ export function createApiHandler(env: Record<string, string>) {
     let maxVat = 0
     let sumVat = 0
     let withImage = 0
+    const withImageBySupplier: Record<string, number> = {}
     for (const p of products) {
       bySupplier[p.supplier] = (bySupplier[p.supplier] || 0) + 1
       byType[p.typeSlug] = (byType[p.typeSlug] || 0) + 1
       if (p.priceVat < minVat) minVat = p.priceVat
       if (p.priceVat > maxVat) maxVat = p.priceVat
       sumVat += p.priceVat
-      if (p.imageUrl) withImage++
+      if (p.imageUrl) {
+        withImage++
+        withImageBySupplier[p.supplier] = (withImageBySupplier[p.supplier] || 0) + 1
+      }
     }
     const categories = [...new Set(accessories.map((a) => String(a.category)))]
     return {
@@ -190,6 +196,7 @@ export function createApiHandler(env: Record<string, string>) {
       bySupplier,
       byType,
       withImage,
+      withImageBySupplier,
       priceVat: {
         min: products.length ? minVat : 0,
         max: products.length ? maxVat : 0,
@@ -201,11 +208,21 @@ export function createApiHandler(env: Record<string, string>) {
     }
   }
 
+  const gzipOk = new WeakSet<ServerResponse>()
+
   function json(res: ServerResponse, status: number, body: unknown) {
     res.statusCode = status
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
     res.setHeader('Cache-Control', 'no-store')
-    res.end(JSON.stringify(body))
+    const payload = Buffer.from(JSON.stringify(body))
+    // full catalogue („Vše“) is ~400 kB of JSON → ~60 kB gzipped
+    if (payload.length > 8192 && gzipOk.has(res)) {
+      res.setHeader('Content-Encoding', 'gzip')
+      res.setHeader('Vary', 'Accept-Encoding')
+      res.end(gzipSync(payload, { level: 6 }))
+      return
+    }
+    res.end(payload)
   }
 
   function readBody(req: IncomingMessage): Promise<string> {
@@ -235,8 +252,14 @@ export function createApiHandler(env: Record<string, string>) {
 
     const method = (req.method || 'GET').toUpperCase()
     const pathOnly = url.split('?')[0]
+    if (/\bgzip\b/.test(String(req.headers['accept-encoding'] || ''))) gzipOk.add(res)
 
     try {
+      if ((method === 'GET' || method === 'HEAD') && pathOnly === '/api/img') {
+        await handleImageProxy(req, res, url)
+        return
+      }
+
       if (method === 'GET' && pathOnly === '/api/stats') {
         const { accessories, products } = await loadCatalog()
         json(res, 200, buildStats(accessories, products))

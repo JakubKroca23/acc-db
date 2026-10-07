@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html as htmlmod
 import json
+import os
 import re
 import time
 import unicodedata
@@ -113,6 +114,129 @@ def dims_from_params(params: str) -> str | None:
     return dims_from_text(params)
 
 
+# ── image helpers ──────────────────────────────────────────────────
+
+_PLACEHOLDER_RE = re.compile(r"(^data:|blank\.|spacer\.|placeholder|loading\.gif|1x1\.)", re.I)
+
+
+def _first_srcset_url(srcset: str) -> str | None:
+    for cand in (srcset or "").split(","):
+        url = cand.strip().split(" ")[0].strip()
+        if url and not _PLACEHOLDER_RE.search(url):
+            return url
+    return None
+
+
+def pick_img(fragment: str, base: str) -> str | None:
+    """Best thumbnail URL from an HTML fragment.
+
+    Order: <picture><source srcset> (Hydrotruck's real file is often only the
+    .webp there — the <img src> .jpg fallback 404s), lazy-load attributes
+    (data-src, data-lazy-src, data-original, data-srcset), srcset, then src.
+    Relative URLs are resolved against `base`.
+    """
+    cands: list[str] = []
+    for m in re.finditer(r"<source\b[^>]*?\b(?:data-)?srcset=\"([^\"]+)\"", fragment, re.I):
+        u = _first_srcset_url(m.group(1))
+        if u:
+            cands.append(u)
+    img = re.search(r"<img\b[^>]*>", fragment, re.I)
+    if img:
+        tag = img.group(0)
+        for attr in ("data-src", "data-lazy-src", "data-original", "data-lazy"):
+            m = re.search(rf'\b{attr}="([^"]+)"', tag, re.I)
+            if m and not _PLACEHOLDER_RE.search(m.group(1)):
+                cands.append(m.group(1))
+        for attr in ("data-srcset", "srcset"):
+            m = re.search(rf'\b{attr}="([^"]+)"', tag, re.I)
+            if m:
+                u = _first_srcset_url(m.group(1))
+                if u:
+                    cands.append(u)
+        m = re.search(r'\bsrc="([^"]+)"', tag, re.I)
+        if m and not _PLACEHOLDER_RE.search(m.group(1)):
+            cands.append(m.group(1))
+    for u in cands:
+        u = htmlmod.unescape(u.strip())
+        if u.startswith("//"):
+            u = "https:" + u
+        return urljoin(base, u)
+    return None
+
+
+def _probe_image(url: str) -> bool:
+    """True when URL answers 200 with image bytes (content type or magic bytes)."""
+    import ssl
+    from urllib.parse import quote
+
+    safe = quote(url, safe=":/?&=%#+,;@!$'()*~")
+    for insecure in (False, True):
+        try:
+            req = Request(safe, headers={**UA, "Range": "bytes=0-1023"})
+            ctx = ssl._create_unverified_context() if insecure else None
+            with urlopen(req, timeout=25, context=ctx) as r:
+                ctype = (r.headers.get("Content-Type") or "").lower()
+                head = r.read(16)
+                # Trans-Technik's IIS sends images with no Content-Type at all → sniff magic bytes
+                magic = head.startswith((b"\xff\xd8", b"\x89PNG", b"GIF8")) or head[8:12] == b"WEBP"
+                return r.status in (200, 206) and (ctype.startswith("image/") or magic)
+        except Exception as e:  # HTTPError 404 etc.
+            code = getattr(e, "code", None)
+            if code is not None:
+                return False
+            continue
+    return False
+
+
+def _og_image(page_url: str) -> str | None:
+    try:
+        html = get_ht(page_url) if "hydrotruck.cz" in page_url else get(page_url, retries=2)
+    except Exception:
+        return None
+    m = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', html) or re.search(
+        r'<meta[^>]+content="([^"]+)"[^>]+property="og:image"', html
+    )
+    if m:
+        return urljoin(page_url, htmlmod.unescape(m.group(1)))
+    return pick_img(html, page_url)
+
+
+def verify_images(items: list[dict]) -> None:
+    """Check every imageUrl; repair dead ones (jpg→webp, product-page og:image)."""
+    by_url: dict[str, bool] = {}
+    urls = sorted({p["imageUrl"] for p in items if p.get("imageUrl")})
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for url, ok in zip(urls, ex.map(_probe_image, urls)):
+            by_url[url] = ok
+    dead = [u for u, ok in by_url.items() if not ok]
+    emit_progress(f"IMG probe: {len(urls) - len(dead)}/{len(urls)} OK, {len(dead)} dead")
+
+    def repair(p: dict) -> str | None:
+        url = p.get("imageUrl")
+        if url:
+            alt = re.sub(r"\.(jpe?g|png)$", ".webp", url, flags=re.I)
+            if alt != url and _probe_image(alt):
+                return alt
+        page = p.get("productUrl")
+        if page and urlparse(page).path not in ("", "/"):
+            og = _og_image(page)
+            if og and _probe_image(og):
+                return og
+        return None
+
+    todo = [p for p in items if (not p.get("imageUrl") or not by_url.get(p["imageUrl"], True))
+            and p.get("productUrl") and urlparse(p["productUrl"]).path not in ("", "/")]
+    fixed = 0
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for p, new in zip(todo, ex.map(repair, todo)):
+            if new:
+                p["imageUrl"] = new
+                fixed += 1
+            elif p.get("imageUrl") and not by_url.get(p["imageUrl"], True):
+                p["imageUrl"] = None  # never ship a known-404 thumbnail
+    emit_progress(f"IMG repair: fixed {fixed}/{len(todo)}")
+
+
 def load_map() -> dict:
     return json.loads(MAP_PATH.read_text(encoding="utf-8"))
 
@@ -164,6 +288,7 @@ def parse_alsap_list(url: str, type_slug: str) -> list[dict]:
         img_m = re.search(r'data-src="(https://cdn\.alsap\.cz/[^"]+)"', ch) or re.search(
             r'src="(https://cdn\.alsap\.cz/[^"]+)"', ch
         )
+        alsap_img = img_m.group(1) if img_m else pick_img(ch, "https://www.alsap.cz/")
         # JSON-LD sku sometimes embedded
         sku_m = re.search(r'"sku"\s*:\s*"([^"]+)"', ch)
         novat = re.search(r'novat[\s\S]{0,220}?class="value">([^<]+)<', ch)
@@ -184,7 +309,7 @@ def parse_alsap_list(url: str, type_slug: str) -> list[dict]:
                 "name": name[:220],
                 "price": round(price, 2),  # type: ignore
                 "priceVat": round(price_vat, 2),  # type: ignore
-                "imageUrl": img_m.group(1) if img_m else None,
+                "imageUrl": alsap_img,
                 "productUrl": urljoin("https://www.alsap.cz", href_m.group(1)),
                 "dimensions": dims_from_text(name),
                 "supplier": "ALSAP",
@@ -242,7 +367,6 @@ def parse_tt_cards(html: str, type_slug: str, page_img: str | None) -> list[dict
     out: list[dict] = []
     for part in re.split(r'class="product-types-card"', html)[1:]:
         href_m = re.search(r'href="(/[^"#?]+)"', part)
-        img_m = re.search(r'<img[^>]+src="([^"]+)"', part)
         name_m = re.search(r"<h3>(.*?)</h3>", part, re.S)
         sku_m = re.search(r'class="product-types-id">([^<]+)<', part)
         price_m = re.search(r'class="product-types-price">\s*([^<]+?)\s*<', part)
@@ -254,9 +378,7 @@ def parse_tt_cards(html: str, type_slug: str, page_img: str | None) -> list[dict
             continue
         price_vat = round(price * VAT, 2)
         name = norm(re.sub(r"<[^>]+>", "", name_m.group(1)))
-        img = img_m.group(1) if img_m else page_img
-        if img and not img.startswith("http"):
-            img = urljoin("https://www.trans-technik.cz", img)
+        img = pick_img(part, "https://www.trans-technik.cz/") or page_img
         dims = dims_from_params(params) or dims_from_text(name)
         out.append(
             {
@@ -349,10 +471,8 @@ def parse_tt_table(html: str, type_slug: str, page_img: str | None) -> list[dict
 
 def parse_tt_list(url: str, type_slug: str) -> list[dict]:
     html = get(url).replace("\xa0", " ")
-    img_m = re.search(r'product-types-header-image[\s\S]{0,500}?src="([^"]+)"', html)
-    page_img = img_m.group(1) if img_m else None
-    if page_img and not page_img.startswith("http"):
-        page_img = urljoin("https://www.trans-technik.cz", page_img)
+    head_m = re.search(r'product-types-header-image[\s\S]{0,800}', html)
+    page_img = pick_img(head_m.group(0), "https://www.trans-technik.cz/") if head_m else None
     items = parse_tt_cards(html, type_slug, page_img)
     items.extend(parse_tt_table(html, type_slug, page_img))
     return items
@@ -374,7 +494,6 @@ def parse_ht_page(html: str, type_slug: str) -> list[dict]:
     out: list[dict] = []
     for part in re.split(r'class="product-card"', html)[1:]:
         href_m = re.search(r'href="(/[^"#?]+)"', part)
-        img_m = re.search(r'<img[^>]+src="([^"]+)"', part)
         name_m = re.search(r'class="product-name"[^>]*>([^<]+)<', part)
         type_m = re.search(r'class="type">([^<]*)<', part)
         prices = re.findall(
@@ -397,9 +516,7 @@ def parse_ht_page(html: str, type_slug: str) -> list[dict]:
         name = norm(name_m.group(1))
         typ = norm(type_m.group(1)) if type_m and type_m.group(1).strip() else ""
         full = f"{typ} {name}".strip() if typ and typ not in name else name
-        img = img_m.group(1) if img_m else None
-        if img and not img.startswith("http"):
-            img = urljoin("https://www.hydrotruck.cz", img)
+        img = pick_img(part, "https://www.hydrotruck.cz/")
         slug = ht_reclassify_slug(full, type_slug)
         out.append(
             {
@@ -430,6 +547,9 @@ def parse_ht_list(url: str, type_slug: str, max_pages: int = 12) -> list[dict]:
             emit_progress(f"HT ERR page {page} {type_slug}: {e}")
             break
         batch = parse_ht_page(html, type_slug)
+        if page == 1 and not batch and ("Server Error 500" in html or "něco prasklo" in html):
+            # Hydrotruck answers some category pages with an HTTP-200 error page
+            raise RuntimeError(f"Hydrotruck error page for {url}")
         fresh = []
         for item in batch:
             pu = item.get("productUrl") or item["name"]
@@ -467,6 +587,7 @@ def emit_progress(msg: str) -> None:
 def main() -> None:
     cmap = load_map()
     all_items: list[dict] = []
+    failed: set[tuple[str, str]] = set()  # (supplier, typeSlug) with a failed source page
 
     # ALSAP
     emit_progress("=== ALSAP ===")
@@ -485,6 +606,7 @@ def main() -> None:
                 emit_progress(f"ALSAP {s}: {len(ps)}  {u.split('/')[-2] if '/?f=' in u or u.endswith('/') else u[-40:]}")
                 all_items.extend(ps)
             except Exception as e:
+                failed.add(("ALSAP", s))
                 emit_progress(f"ALSAP ERR {s}: {e}")
 
     # Trans-Technik
@@ -518,13 +640,16 @@ def main() -> None:
                     emit_progress(f"TT {s}: {len(ps)}  {u.split('/')[-1][:55]}")
                 all_items.extend(ps)
             except Exception as e:
+                failed.add(("Trans-Technik", s))
                 emit_progress(f"TT ERR {s}: {e}")
 
     # Hydrotruck (optional, keep if reachable)
     emit_progress("=== Hydrotruck ===")
     with ThreadPoolExecutor(max_workers=4) as ex:
+        # maxPages (optional, per entry) caps huge listings — e.g. Hydrotruck pump
+        # categories have ~20 pages each; we deliberately keep only the first page(s).
         futs = {
-            ex.submit(parse_ht_list, e["url"], e["typeSlug"]): (e["typeSlug"], e["url"])
+            ex.submit(parse_ht_list, e["url"], e["typeSlug"], int(e.get("maxPages", 12))): (e["typeSlug"], e["url"])
             for e in cmap.get("hydrotruck", [])
         }
         for fut in as_completed(futs):
@@ -534,6 +659,7 @@ def main() -> None:
                 emit_progress(f"HT {s}: {len(ps)}  {u.split('/')[-1]}")
                 all_items.extend(ps)
             except Exception as e:
+                failed.add(("Hydrotruck", s))
                 emit_progress(f"HT ERR {s}: {e}")
 
     # Manual / estimate fillers
@@ -613,7 +739,26 @@ def main() -> None:
             ]
         )
 
+    # Source page failed → keep last known-good products of that supplier+type
+    # (otherwise the seed would delete them as stale).
+    if failed and OUT.exists():
+        try:
+            prev = json.loads(OUT.read_text(encoding="utf-8"))
+        except Exception:
+            prev = []
+        have = {(p["supplier"], p.get("productUrl") or p["name"]) for p in all_items}
+        kept = [
+            p for p in prev
+            if (p["supplier"], p["typeSlug"]) in failed
+            and (p["supplier"], p.get("productUrl") or p["name"]) not in have
+            and not str(p.get("name", "")).endswith("(orientační)")
+        ]
+        all_items.extend(kept)
+        emit_progress(f"carried over {len(kept)} previous products for failed sources {sorted(failed)}")
+
     final = [p for p in dedupe(all_items) if p["typeSlug"] != "zadni-zabrana"]
+    if os.environ.get("SKIP_IMAGE_VERIFY") != "1":
+        verify_images(final)
     OUT.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
     emit_progress(f"TOTAL {len(final)} {dict(Counter(p['supplier'] for p in final))}")
     emit_progress(str(dict(Counter(p["typeSlug"] for p in final))))

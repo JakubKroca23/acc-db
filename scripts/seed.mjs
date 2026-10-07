@@ -146,7 +146,41 @@ for (;;) {
   if (batch.rows.length < 100) break
   listCursor = batch.rows[batch.rows.length - 1].$id
 }
+// Safety net: if a supplier's scrape came back much smaller than what the DB holds
+// (network/TLS failure, site outage), do NOT delete that supplier's rows — keep the
+// last known-good catalogue instead of wiping it.
+const dbBySupplier = {}
+const newBySupplier = {}
+const staleSupplier = new Map()
+{
+  let cur
+  for (;;) {
+    const queries = [Query.limit(100), Query.select(['$id', 'supplier'])]
+    if (cur) queries.push(Query.cursorAfter(cur))
+    const batch = await db.listRows({ databaseId, tableId: 'products', queries })
+    for (const row of batch.rows) {
+      dbBySupplier[row.supplier] = (dbBySupplier[row.supplier] || 0) + 1
+      staleSupplier.set(row.$id, row.supplier)
+    }
+    if (batch.rows.length < 100) break
+    cur = batch.rows[batch.rows.length - 1].$id
+  }
+}
+for (const p of products) newBySupplier[p.supplier] = (newBySupplier[p.supplier] || 0) + 1
+const protectedSuppliers = new Set(
+  Object.keys(dbBySupplier).filter(
+    (s) => dbBySupplier[s] >= 20 && (newBySupplier[s] || 0) < dbBySupplier[s] * 0.5 && process.env.SEED_FORCE_DELETE !== '1',
+  ),
+)
+if (protectedSuppliers.size) {
+  console.warn(
+    `WARN: scrape looks incomplete for ${[...protectedSuppliers].join(', ')} ` +
+      `(db ${[...protectedSuppliers].map((s) => dbBySupplier[s]).join('/')} → new ${[...protectedSuppliers].map((s) => newBySupplier[s] || 0).join('/')}); ` +
+      'keeping their existing products (set SEED_FORCE_DELETE=1 to override)',
+  )
+}
 for (const rowId of staleIds) {
+  if (protectedSuppliers.has(staleSupplier.get(rowId))) continue
   try {
     await db.deleteRow({ databaseId, tableId: 'products', rowId })
     deletedProducts++
