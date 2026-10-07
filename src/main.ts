@@ -769,11 +769,8 @@ function quotePanelHtml(embedded = false): string {
   return `
     <div class="quote ${embedded ? 'embedded' : ''}" ${embedded ? '' : 'id="quote-print"'}>
       <div class="print-brand print-only-block">
-        <img src="${import.meta.env.BASE_URL}brand/contsystem-logo.png" alt="ContSystem" />
-        <div class="print-brand-meta">
-          <div>Katalog příslušenství</div>
-          <div>${escapeHtml(now)}</div>
-        </div>
+        <div class="print-brand-title">Katalog příslušenství</div>
+        <div class="print-brand-meta">${escapeHtml(now)}</div>
       </div>
       <header class="quote-head">
         <div>
@@ -832,9 +829,7 @@ const BASE = import.meta.env.BASE_URL
 app.innerHTML = `
   <div class="shell">
     <header class="app-header">
-      <a class="brand" href="${BASE}" aria-label="ContSystem — Katalog příslušenství">
-        <img class="brand-logo" src="${BASE}brand/contsystem-logo-mark.png" alt="ContSystem" width="128" height="26" />
-        <span class="brand-divider" aria-hidden="true"></span>
+      <a class="brand" href="${BASE}">
         <span class="brand-app">Katalog příslušenství</span>
       </a>
       <div class="header-search">

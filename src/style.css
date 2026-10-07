@@ -2,13 +2,11 @@
  * ACC-DB — Contsystem Manager design language (cs-zakazky, src/app/globals.css):
  *  brand blue #0091FF (+ hover = 10 % black mix), app background zinc-200 #e4e4e7,
  *  dark titlebar #1c1d24, sidebar panel #0c0d12, white cards with neutral borders,
- *  compact radii (4 px base / 8 px cards / 12 px dialogs), Inter (body),
- *  Outfit (headings/labels), Plus Jakarta Sans (buttons), JetBrains Mono (numbers).
+ *  compact radii (4 px base / 8 px cards / 12 px dialogs).
+ *  Typography: a single family, Inter, for everything (headings, buttons, labels, print);
+ *  numbers use Inter with font-variant-numeric: tabular-nums.
  */
 @import '@fontsource-variable/inter';
-@import '@fontsource-variable/outfit';
-@import '@fontsource-variable/plus-jakarta-sans';
-@import '@fontsource-variable/jetbrains-mono';
 
 :root {
   --brand-blue: #0091ff;
@@ -60,12 +58,11 @@
   --drawer-w: min(640px, 92vw);
   --drawer-dur: 320ms;
 
-  --font-body: 'Inter Variable', Inter, system-ui, sans-serif;
-  --font-heading: 'Outfit Variable', Outfit, var(--font-body);
-  --font-button: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', var(--font-body);
-  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+  /* One family everywhere (as cs-zakazky body): Inter, self-hosted via @fontsource-variable.
+     Fallbacks are plain sans-serif only — nothing that could resolve to a cursive/comic face. */
+  --font-sans: 'Inter Variable', Inter, system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
 
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   color: var(--foreground);
   background: var(--background);
   line-height: 1.45;
@@ -111,7 +108,7 @@ textarea {
 h1,
 h2,
 h3 {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   letter-spacing: -0.01em;
 }
 
@@ -145,25 +142,12 @@ h3 {
   min-width: calc(var(--sidebar-w) - 16px);
 }
 
-.brand-logo {
-  height: 22px;
-  width: auto;
-  /* contsystem-logo-mark.png is black artwork → render white on the dark titlebar */
-  filter: brightness(0) invert(1);
-}
-
-.brand-divider {
-  width: 1px;
-  height: 20px;
-  background: rgba(255, 255, 255, 0.18);
-}
-
 .brand-app {
-  font-family: var(--font-heading);
-  font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.02em;
-  color: rgba(255, 255, 255, 0.82);
+  font-family: var(--font-sans);
+  font-weight: 650;
+  font-size: 15px;
+  letter-spacing: -0.01em;
+  color: #fff;
   white-space: nowrap;
 }
 
@@ -244,7 +228,7 @@ h3 {
   border-radius: 999px;
   background: transparent;
   color: rgba(255, 255, 255, 0.78);
-  font-family: var(--font-button);
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 13px;
   cursor: pointer;
@@ -284,7 +268,8 @@ h3 {
 }
 
 .cart-total {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 12.5px;
   font-weight: 600;
   padding-left: 8px;
@@ -327,7 +312,7 @@ h3 {
 }
 
 .nav-group-title {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
@@ -403,7 +388,7 @@ h3 {
   padding: 0 12px;
   border-radius: var(--radius-md);
   border: 1px solid transparent;
-  font-family: var(--font-button);
+  font-family: var(--font-sans);
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
@@ -530,7 +515,7 @@ textarea:focus {
   border: 1px solid var(--bd);
   background: var(--bg);
   color: var(--c);
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -590,7 +575,7 @@ textarea:focus {
 }
 
 .crumb {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
@@ -618,7 +603,8 @@ textarea:focus {
 }
 
 .legend-n {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: var(--muted-foreground);
   margin: 0 8px 0 2px;
@@ -635,7 +621,7 @@ textarea:focus {
 }
 
 .related-label {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
@@ -657,7 +643,7 @@ textarea:focus {
   border: 1px solid var(--border-strong);
   background: #fff;
   color: var(--foreground);
-  font-family: var(--font-button);
+  font-family: var(--font-sans);
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
@@ -724,7 +710,7 @@ textarea:focus {
   color: var(--c);
   display: grid;
   place-items: center;
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-weight: 700;
   font-size: 18px;
 }
@@ -758,7 +744,8 @@ textarea:focus {
 }
 
 .sku {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 10.5px;
   color: var(--muted-foreground);
   overflow: hidden;
@@ -798,7 +785,7 @@ textarea:focus {
 }
 
 .dual-price strong {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 17px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -845,7 +832,8 @@ textarea:focus {
   width: 42px;
   border: 0;
   text-align: center;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-weight: 600;
   -moz-appearance: textfield;
 }
@@ -931,7 +919,8 @@ textarea:focus {
 
 .update-logs {
   margin-top: 6px;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   max-height: 6rem;
   overflow: auto;
@@ -949,7 +938,7 @@ textarea:focus {
 }
 
 .price-history-title {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-weight: 700;
   margin-bottom: 4px;
 }
@@ -1087,7 +1076,7 @@ textarea:focus {
 }
 
 .quote-kicker {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.12em;
@@ -1130,14 +1119,14 @@ textarea:focus {
 .quote-note {
   display: grid;
   gap: 5px;
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 12px;
   font-weight: 600;
   color: #52525b;
 }
 
 .quote-note textarea {
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   font-weight: 400;
   font-size: 13px;
   resize: vertical;
@@ -1179,7 +1168,7 @@ textarea:focus {
 }
 
 .qs-count {
-  font-family: var(--font-body);
+  font-family: var(--font-sans);
   font-weight: 500;
   font-size: 12px;
   color: var(--muted-foreground);
@@ -1210,7 +1199,8 @@ textarea:focus {
 
 .q-unit-inline {
   display: none;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   color: #52525b;
   margin-top: 3px;
@@ -1237,7 +1227,7 @@ textarea:focus {
 }
 
 .quote-table th {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
@@ -1248,14 +1238,15 @@ textarea:focus {
 
 .quote-table .num {
   text-align: right;
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .quote-table th.num {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 10px;
 }
 
@@ -1329,7 +1320,8 @@ textarea:focus {
 }
 
 .qt-row > span:last-child {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 12.5px;
   text-align: right;
 }
@@ -1389,14 +1381,9 @@ textarea:focus {
   :root {
     --sidebar-w: 220px;
   }
-  .brand-app {
-    display: none;
-  }
-  .brand-divider {
-    display: none;
-  }
   .brand {
     width: auto;
+    min-width: 0;
   }
 }
 
@@ -1516,13 +1503,13 @@ textarea:focus {
 
 @media (max-width: 640px) {
   .q-unit-inline {
-    font-family: var(--font-body);
+    font-family: var(--font-sans);
   }
 }
 
 @media (max-width: 430px) {
-  .brand-logo {
-    height: 20px;
+  .brand-app {
+    font-size: 14px;
   }
   .select {
     max-width: 112px;
@@ -1583,20 +1570,17 @@ textarea:focus {
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
-  .print-brand img {
-    height: 15mm;
-    width: auto;
+  .print-brand-title {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: #18181b;
   }
   .print-brand-meta {
     text-align: right;
-    font-family: var(--font-heading);
     font-size: 11px;
     color: #3f3f46;
-  }
-  .print-brand-meta div:first-child {
-    font-weight: 700;
-    font-size: 13px;
-    color: #18181b;
+    font-variant-numeric: tabular-nums;
   }
   .quote-head .quote-date {
     display: none;
@@ -1676,7 +1660,8 @@ textarea:focus {
 }
 
 .nav-count {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
   font-size: 11px;
   font-weight: 600;
   padding: 1px 7px;
@@ -1691,7 +1676,7 @@ textarea:focus {
 }
 
 .product-cat {
-  font-family: var(--font-heading);
+  font-family: var(--font-sans);
   font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
