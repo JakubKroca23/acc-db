@@ -10,7 +10,8 @@ import karelHead from './assets/kapitan-karel-head.png'
 import karelFull from './assets/kapitan-karel.png'
 
 type Role = 'user' | 'assistant'
-type Msg = { role: Role; content: string; error?: boolean; model?: string; actions?: string[] }
+type Refs = { products?: Record<string, { id: string } & Record<string, unknown>>; categories?: string[] }
+type Msg = { role: Role; content: string; error?: boolean; model?: string; actions?: string[]; refs?: Refs }
 type LimitBar = { limit: number; used: number; remaining: number; resetAt: number | null; source: 'groq' | 'local' } | null
 type ModelLimits = { rpd: LimitBar; tpm: LimitBar; rpm: LimitBar; tpd: LimitBar; blockedUntil: number | null; updatedAt: number | null }
 type ModelOption = { id: string; label: string; provider: 'ollama' | 'groq' | 'gemini'; available: boolean; tools?: boolean; limits?: ModelLimits | null; description?: string }
@@ -105,7 +106,33 @@ export function plainLine(raw: string): { text: string; heading: boolean } | nul
  * tables as plain lines, `code` without backticks. Built with DOM nodes only (no innerHTML),
  * so model output can never inject markup.
  */
-export function setRichText(target: HTMLElement, text: string) {
+const LINK_RE = /\[\[(produkt|pridat|kategorie|nabidka)(?::([A-Za-z0-9_-]{1,64}))?\|([^\]\n]{1,80})\]\]/g
+
+/** [[kind:id|label]] → a button (only for ids the server validated against the catalogue), otherwise plain label */
+function linkNodes(text: string, refs: Refs | undefined): Node[] {
+  const out: Node[] = []
+  let at = 0
+  for (const m of text.matchAll(LINK_RE)) {
+    if (m.index! > at) out.push(document.createTextNode(text.slice(at, m.index)))
+    const [, kind, id = '', label] = m
+    const ok = kind === 'nabidka' || (kind === 'kategorie' ? !!refs?.categories?.includes(id) : !!refs?.products?.[id])
+    if (ok) {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.className = `chat-link is-${kind}`
+      b.dataset.kind = kind
+      if (id) b.dataset.id = id
+      b.textContent = label.trim()
+      out.push(b)
+    } else out.push(document.createTextNode(label.trim()))
+    at = m.index! + m[0].length
+  }
+  if (at < text.length) out.push(document.createTextNode(text.slice(at)))
+  return out
+}
+
+export function setRichText(target: HTMLElement, text: string, refs?: Refs) {
+  text = text.replace(/\[\[[^\]\n]*\]?$/, '') // half-streamed link markup is not shown yet
   const nodes: Node[] = []
   const lines = text
     .split('\n')
@@ -120,9 +147,9 @@ export function setRichText(target: HTMLElement, text: string) {
       const isBold = k % 3 !== 0 || l.heading
       if (isBold) {
         const strong = document.createElement('strong')
-        strong.textContent = part
+        strong.append(...linkNodes(part, refs))
         nodes.push(strong)
-      } else nodes.push(document.createTextNode(part))
+      } else nodes.push(...linkNodes(part, refs))
     }
     if (i < lines.length - 1) nodes.push(document.createTextNode('\n'))
   })
@@ -396,6 +423,26 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   modelBtn.setAttribute('aria-controls', menu.id)
 
   const log = el('div', 'chat-log')
+  // links/buttons in answers ([[produkt:…]], [[pridat:…]], [[kategorie:…]], [[nabidka|…]]) → the same client actions as the tools
+  log.addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLButtonElement>('.chat-link')
+    if (!b || !host.applyAction) return
+    const kind = b.dataset.kind
+    const id = b.dataset.id || ''
+    const product = [...messages].reverse().map((m) => m.refs?.products?.[id]).find(Boolean)
+    try {
+      if (kind === 'nabidka') host.applyAction({ name: 'otevrit_nabidku', args: {}, label: '' })
+      else if (kind === 'kategorie') host.applyAction({ name: 'otevrit_kategorii', args: { slug: id }, label: '' })
+      else if (product && kind === 'produkt') host.applyAction({ name: 'otevrit_detail_produktu', args: { id }, label: '', product })
+      else if (product && kind === 'pridat') {
+        const qty = (safe(host.getQuote, []).find((q) => q.id === id)?.qty || 0) + 1
+        host.applyAction({ name: 'pridat_do_nabidky', args: { id, mnozstvi: qty }, label: '', product })
+        b.textContent = `✓ Přidáno (${qty}×)`
+      }
+    } catch (err) {
+      console.warn('[chat] link failed', err)
+    }
+  })
   log.setAttribute('role', 'log')
   log.setAttribute('aria-live', 'polite')
 
@@ -454,7 +501,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     const row = el('div', `chat-row ${m.role === 'user' ? 'from-user' : 'from-assistant'}`)
     const col = el('div', 'chat-col')
     const b = el('div', `chat-bubble${m.error ? ' is-error' : ''}`)
-    if (m.role === 'assistant' && !m.error) setRichText(b, m.content)
+    if (m.role === 'assistant' && !m.error) setRichText(b, m.content, m.refs)
     else b.textContent = m.content
     const chips = el('div', 'chat-chips')
     for (const a of m.actions || []) chips.append(chip(a))
@@ -712,7 +759,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
       if (answer.content) {
         b.classList.remove('is-typing')
         b.removeAttribute('aria-label')
-        setRichText(b, answer.content)
+        setRichText(b, answer.content, answer.refs)
       }
       if (stick) scrollDown()
     }
@@ -781,7 +828,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
       let buf = ''
       const handleLine = (line: string) => {
         if (!line.trim()) return
-        let obj: { type?: string; message?: { content?: string }; error?: string; text?: string; model?: string; limits?: ModelLimits; retryAfter?: number } & Partial<ChatAction>
+        let obj: { type?: string; message?: { content?: string }; error?: string; text?: string; model?: string; limits?: ModelLimits; retryAfter?: number; products?: Refs['products']; categories?: string[] } & Partial<ChatAction>
         try {
           obj = JSON.parse(line)
         } catch {
@@ -799,6 +846,10 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         if (obj.type === 'status') return setStatus(obj.text || null)
         if (obj.type === 'action' && obj.name && obj.label) return handleAction(obj as ChatAction)
         if (obj.type === 'limits') return applyLimits(obj.model || modelAtSend, obj.limits)
+        if (obj.type === 'refs') {
+          answer.refs = { products: obj.products || {}, categories: Array.isArray(obj.categories) ? obj.categories : [] }
+          return schedule()
+        }
         const delta = obj.message?.content
         if (delta) {
           if (!view.status.hidden) setStatus(null)

@@ -228,6 +228,7 @@ export function createChatTools(data: CatalogData | undefined) {
       ...(p.sku ? { kod: p.sku } : {}),
       dodavatel: p.supplier,
       kategorie: catName(accessories, p.typeSlug),
+      kategorie_slug: p.typeSlug,
       cena_bez_dph: czk(p.price),
       cena_s_dph: czk(p.priceVat),
       ...(p.unit !== 'ks' ? { jednotka: p.unit } : {}),

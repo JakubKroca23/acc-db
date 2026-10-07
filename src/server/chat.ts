@@ -50,6 +50,7 @@ export const SYSTEM_PROMPT = [
   '- Produkty, ceny, kódy a rozměry vždy zjisti nástrojem hledat_produkty nebo detail_produktu; nic si nevymýšlej. Cena ve filtru je bez DPH. Obsah nabídky zjistíš nástrojem stav_nabidky.',
   '- Akce v aplikaci (kategorie, filtr, hledání, zobrazení produktu, změny nabídky) dělej nástroji jen na žádost uživatele; id produktu ber jen z výsledků nástrojů. Pak stručně potvrď, co jsi udělal. Chybu nebo prázdný výsledek přiznej.',
   '- „Aktuální obrazovka uživatele“ u dotazu = co uživatel právě vidí.',
+  '- Odkazy jako tlačítka: [[produkt:ID|Zobrazit]], [[pridat:ID|Přidat do nabídky]], [[kategorie:SLUG|Název]], [[nabidka|Otevřít nabídku]]; ID a SLUG (kategorie_slug) ber jen z výsledků nástrojů.',
   '- Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou). Vždy vykej.',
 ].join('\n')
 
@@ -58,6 +59,42 @@ export const SYSTEM_PROMPT_BASIC = [
   SYSTEM_PROMPT.slice(0, SYSTEM_PROMPT.indexOf('\nPravidla:')),
   'Pravidla: Nemáš přístup k databázi produktů. U dotazu můžeš dostat „Aktuální obrazovka uživatele“ (co uživatel právě vidí: stránka, kategorie, filtr, produkty, nabídka se součty); o produktech, cenách a nabídce mluv jen podle ní. Nic si nevymýšlej; co nevíš, přiznej a poraď, kde to v katalogu najde. Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou). Vždy vykej.',
 ].join('\n')
+
+/** Local model (no tools): short and clear, navigation facts only — every token costs CPU time on the VPS. */
+export const SYSTEM_PROMPT_LOCAL = [
+  'Jsi Kapitán Karel, asistent aplikace „Katalog příslušenství“ firmy Contsystem (příslušenství k nástavbám nákladních vozidel od dodavatelů ALSAP, Trans-Technik a Hydrotruck). Odpovídej česky, krátce (1–3 věty), prostým textem bez Markdownu. Uživateli vždy vykej („můžete, klikněte, Vaše“).',
+  'Orientace v aplikaci:',
+  '- Vlevo menu kategorií („Vše“ = celý katalog), nahoře „Hledat v katalogu…“ (název, rozměr, kód) a filtr dodavatele.',
+  '- Karta produktu: cena bez DPH a s DPH, „Přidat do nabídky“ (pak − +), „Historie cen“, „Detail ↗“ = web dodavatele.',
+  '- Tlačítko „Cenová nabídka“ vpravo nahoře: položky, množství, odhad dopravy, součty, Poznámka, Kopírovat, CSV, Tisk / PDF, Vymazat nabídku. Nabídka se ukládá pro Vašeho uživatele.',
+  'Produkty ani ceny si nevymýšlej – poraď, ať se zeptá konkrétně (např. „Najdi blatníky do 500 Kč“), pak je dohledáte v katalogu. Odkaz na nabídku napiš jako [[nabidka|Otevřít nabídku]].',
+].join('\n')
+
+/** Cloud helper doing the tool work for the local model: minimal prompt to save tokens. */
+export const SYSTEM_PROMPT_DELEGATE = [
+  'Jsi Kapitán Karel, asistent katalogu příslušenství pro nákladní vozidla (dodavatelé ALSAP, Trans-Technik, Hydrotruck). Uživateli vždy vykej.',
+  '- Produkty a ceny zjisti nástroji, nic si nevymýšlej; akce v aplikaci dělej jen na žádost, id ber jen z výsledků nástrojů. Ceny uváděj s „bez DPH“ / „s DPH“.',
+  '- Odkazy jako tlačítka: [[produkt:ID|Zobrazit]], [[pridat:ID|Přidat do nabídky]], [[kategorie:SLUG|Název]], [[nabidka|Otevřít nabídku]]; ID a SLUG (kategorie_slug) ber jen z výsledků nástrojů.',
+  '- Odpověz 1–3 větami prostým textem bez Markdownu.',
+].join('\n')
+
+/** Compact 'where am I' line for the local model (page / category / search / open product) instead of the full screen context. */
+export function whereAmI(json: string | null): string | null {
+  if (!json) return null
+  try {
+    const c = JSON.parse(json) as Record<string, unknown>
+    const parts = [String(c['Stránka'] || '')]
+    if (c['Kategorie']) parts.push(`kategorie ${String(c['Kategorie']).replace(/ \(skupina.*\)$/, '')}`)
+    if (c['Hledaný text']) parts.push(`hledá „${String(c['Hledaný text'])}“`)
+    if (c['Filtr dodavatele'] && c['Filtr dodavatele'] !== 'všichni') parts.push(`filtr ${String(c['Filtr dodavatele'])}`)
+    const open = c['Otevřený detail produktu (Historie cen)']
+    if (open) parts.push(`otevřený produkt ${String(open).split(/,| · /)[0].slice(0, 80)}`)
+    const line = parts.filter(Boolean).join(', ')
+    return line ? `Uživatel je teď na: ${line}.` : null
+  } catch {
+    return null
+  }
+}
 
 /** model has tools, but this message didn't look like a catalogue request → no tools sent this turn */
 const SYSTEM_PROMPT_LATER = `${SYSTEM_PROMPT_BASIC}\nV tomto kroku nemáte nástroje, ale jinak umíte hledat v katalogu, otevírat kategorie a detaily a upravovat nabídku – stačí, když uživatel napíše konkrétní požadavek (např. „Najdi blatníky do 500 Kč“).`
@@ -555,7 +592,43 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     })
   }
 
-  function promptMessages(all: ChatMessage[], context: string | null, withTools: boolean, canTools = false): Msg[] {
+  /** LOCAL_DELEGATE_MODEL: comma list of cloud models doing tool work for the local model ('off' = never) */
+  const delegateList = (env.LOCAL_DELEGATE_MODEL || 'groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash')
+    .split(',')
+    .map((x) => x.trim())
+    .filter((x) => x && x !== 'off')
+  function pickDelegate(): { cloud: Cloud; model: string; id: string; label: string } | null {
+    for (const id of delegateList) {
+      const [prov, ...rest] = id.split(':')
+      const model = rest.join(':')
+      const cloud = prov === 'groq' || prov === 'gemini' ? clouds[prov] : undefined
+      if (!cloud || !cloud.key || !model || !cloud.tools.length) continue
+      if (cloud.limits.blockedFor(model) > 0) continue // limit exhausted → next one / local without tools
+      return { cloud, model, id, label: cloud.label(model).replace(/^(GroqCloud|Google) – /, '') }
+    }
+    return null
+  }
+
+  /** [[produkt:ID|…]] / [[pridat:ID|…]] / [[kategorie:SLUG|…]] in an answer → validated against the catalogue for the widget */
+  async function linkRefs(text: string): Promise<{ products: Record<string, unknown>; categories: string[] } | null> {
+    const found = [...text.matchAll(/\[\[(produkt|pridat|kategorie):([A-Za-z0-9_-]{1,64})\|/g)]
+    if (!found.length || !tools.available) return null
+    try {
+      const { byId, accessories } = await tools.catalog()
+      const products: Record<string, unknown> = {}
+      const categories: string[] = []
+      for (const [, kind, id] of found) {
+        if (kind === 'kategorie') {
+          if ((id === 'vse' || accessories.some((a) => a.slug === id)) && !categories.includes(id)) categories.push(id)
+        } else if (byId.has(id)) products[id] = clientProduct(byId.get(id))
+      }
+      return Object.keys(products).length || categories.length ? { products, categories } : null
+    } catch {
+      return null
+    }
+  }
+
+  function promptMessages(all: ChatMessage[], context: string | null, system: string, where: string | null = null): Msg[] {
     // token saving: only the last few turns, long assistant answers shortened
     let messages = all.slice(-PROMPT_HISTORY)
     while (messages.length > 1 && messages[0].role !== 'user') messages = messages.slice(1)
@@ -564,9 +637,9 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     // The static system prompt (+ tools) stays the exact same prefix → Ollama / Groq reuse their prompt cache.
     // The screen context rides in the LAST user message, so earlier turns stay cacheable too.
     return [
-      { role: 'system', content: withTools ? SYSTEM_PROMPT : canTools ? SYSTEM_PROMPT_LATER : SYSTEM_PROMPT_BASIC },
+      { role: 'system', content: system },
       ...messages.slice(0, -1),
-      { role: 'user', content: context ? withContext(context, last) : last },
+      { role: 'user', content: context ? withContext(context, last) : where ? `${where}\n\nDotaz: ${last}` : last },
     ]
   }
 
@@ -749,10 +822,15 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       throw err
     }
 
-    const cloud = choice.provider === 'ollama' ? null : clouds[choice.provider]
+    // Local model + a catalogue/action question → the tool loop AND the short final answer run on a fast cheap
+    // cloud model (prompt evaluation of tool results on the VPS CPU would take tens of seconds). Plain chat stays local.
+    const wants = wantsTools(messages)
+    const delegate = choice.provider === 'ollama' && wants && !ollamaTools.length ? pickDelegate() : null
+    const cloud = delegate ? delegate.cloud : choice.provider === 'ollama' ? null : clouds[choice.provider]
+    const runModel = delegate ? delegate.model : choice.model
     const isGroq = !!cloud // = OpenAI-compatible cloud (GroqCloud or Gemini)
     const limits = cloud?.limits ?? clouds.groq.limits
-    if (cloud) {
+    if (cloud && !delegate) {
       let wait = limits.blockedFor(choice.model)
       if (wait > 0 && wait <= 5) {
         await new Promise((r) => setTimeout(r, wait * 1000 + 200)) // tokens/min window almost reset
@@ -796,19 +874,27 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       if (!res.destroyed) res.write(JSON.stringify(o) + '\n')
     }
     const sendLimits = () => {
-      if (isGroq) line({ type: 'limits', model: choice.id, limits: limits.snapshot(choice.model) })
+      if (isGroq) line({ type: 'limits', model: delegate ? delegate.id : choice.id, limits: limits.snapshot(runModel) })
     }
 
-    const modelTools = cloud ? cloud.tools : ollamaTools
-    const toolDefs = wantsTools(messages) ? modelTools : []
+    const modelTools = delegate ? delegate.cloud.tools.filter((t) => t.function.name !== 'seznam_kategorii') : cloud ? cloud.tools : ollamaTools
+    const toolDefs = wants ? modelTools : []
     // screen context only when tools are sent or the message refers to the current screen / quote
     const sendContext = toolDefs.length > 0 || SCREEN_REF.test(messages[messages.length - 1].content)
-    let convo = promptMessages(messages, sendContext ? context : null, toolDefs.length > 0, modelTools.length > 0)
+    const localPlain = !cloud && !toolDefs.length
+    const system = delegate ? SYSTEM_PROMPT_DELEGATE : toolDefs.length ? SYSTEM_PROMPT : localPlain ? SYSTEM_PROMPT_LOCAL : modelTools.length ? SYSTEM_PROMPT_LATER : SYSTEM_PROMPT_BASIC
+    // local model: one 'where am I' line; full screen context only for a catalogue question it must answer alone
+    const fullCtx = sendContext && (!localPlain || wants)
+    let convo = promptMessages(messages, fullCtx ? context : null, system, localPlain && sendContext && !wants ? whereAmI(context) : null)
+    const maxRounds = delegate ? 3 : MAX_ROUNDS
+    if (delegate) line({ type: 'status', text: `Hledám v katalogu (pomocník ${delegate.label})…` })
+    let fullText = ''
     let anyText = false
     let actions = 0
     const done = new Set<string>()
     const onText = (t: string) => {
       anyText = true
+      fullText += t
       line({ message: { role: 'assistant', content: t }, done: false })
     }
 
@@ -848,7 +934,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         first = undefined
       }
       try {
-        return cloud ? await cloudRound(cloud, choice.model, convo, defs, forceText, rc.signal, onText, onFirst) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
+        return cloud ? await cloudRound(cloud, runModel, convo, defs, forceText, rc.signal, onText, onFirst) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
       } finally {
         onFirst()
         ctrl.signal.removeEventListener('abort', abort)
@@ -859,8 +945,8 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     const early = isGroq ? undefined : setTimeout(() => !res.headersSent && line({ type: 'status', text: 'Čtu dotaz…' }), 1200)
     try {
       let defs = toolDefs
-      for (let i = 0; i < MAX_ROUNDS; i++) {
-        const last = i === MAX_ROUNDS - 1
+      for (let i = 0; i < maxRounds; i++) {
+        const last = i === maxRounds - 1
         let r: Round
         try {
           r = await round(defs, last && defs.length > 0)
@@ -891,7 +977,8 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
           else {
             done.add(key)
             try {
-              result = await tools.run(c.name, c.args, quote, (e) => {
+              const args = delegate && c.name === 'hledat_produkty' ? { ...c.args, limit: Math.min(Number(c.args.limit) || 3, 3) } : c.args // small result caps for the helper
+              result = await tools.run(c.name, args, quote, (e) => {
                 actions++
                 line({ ...e, product: clientProduct(e.product) })
               })
@@ -907,8 +994,10 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         }
       }
       if (!anyText) onText(actions ? 'Hotovo.' : 'Promiňte, odpověď se nepodařilo dokončit. Zkuste to prosím znovu.')
+      const refs = await linkRefs(fullText)
+      if (refs) line({ type: 'refs', ...refs })
       sendLimits()
-      line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id })
+      line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id, ...(delegate ? { via: delegate.id } : {}) })
       if (!res.destroyed) res.end()
     } catch (err) {
       if (res.destroyed) return
@@ -928,7 +1017,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       }
       if (!res.headersSent) {
         if (retryAfter) res.setHeader('Retry-After', String(retryAfter))
-        return sendJson(res, status, { error: msg, ...(retryAfter ? { retryAfter } : {}), ...(isGroq ? { limits: limits.snapshot(choice.model) } : {}) })
+        return sendJson(res, status, { error: msg, ...(retryAfter ? { retryAfter } : {}), ...(isGroq && !delegate ? { limits: limits.snapshot(choice.model) } : {}) })
       }
       sendLimits()
       line({ error: msg, ...(retryAfter ? { retryAfter } : {}), done: true })
@@ -956,7 +1045,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
             ...keep,
             options: { ...(options || {}), num_predict: 1 },
             messages: [
-              { role: 'system', content: ollamaTools.length ? SYSTEM_PROMPT : SYSTEM_PROMPT_BASIC },
+              { role: 'system', content: ollamaTools.length ? SYSTEM_PROMPT : SYSTEM_PROMPT_LOCAL },
               { role: 'user', content: 'Ahoj' },
             ],
             ...(ollamaTools.length ? { tools: ollamaTools } : {}),
