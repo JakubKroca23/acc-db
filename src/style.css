@@ -222,44 +222,6 @@ h3 {
   cursor: not-allowed;
 }
 
-/* logged-in Manager user (auth gate) — links back to Contsystem Manager */
-.hdr-user {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 200px;
-  height: 34px;
-  padding: 0 10px;
-  border-radius: var(--radius-md);
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 13px;
-  font-weight: 500;
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.hdr-user span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.hdr-user svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-.hdr-user:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #fff;
-}
-
-@media (max-width: 640px) {
-  .hdr-user {
-    display: none;
-  }
-}
-
 /* „Cenová nabídka“ — the only quote entry point; badge = current total bez DPH */
 .quote-btn {
   height: 34px;

@@ -18,6 +18,14 @@ function apiPlugin(env: Record<string, string>): Plugin {
     name: 'acc-db-api',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
+        if (req.url === '/' || req.url === '') {
+          res.writeHead(302, { Location: '/acc-db/' })
+          res.end()
+          return
+        }
+        next()
+      })
+      server.middlewares.use((req, res, next) => {
         void gate.middleware(req, res, next)
       })
       server.middlewares.use((req, res, next) => {
@@ -26,6 +34,14 @@ function apiPlugin(env: Record<string, string>): Plugin {
     },
     configurePreviewServer(server) {
       handler.onServerStart()
+      server.middlewares.use((req, res, next) => {
+        if (req.url === '/' || req.url === '') {
+          res.writeHead(302, { Location: '/acc-db/' })
+          res.end()
+          return
+        }
+        next()
+      })
       server.middlewares.use((req, res, next) => {
         void gate.middleware(req, res, next)
       })
