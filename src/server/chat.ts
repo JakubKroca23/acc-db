@@ -157,6 +157,9 @@ const ASSISTANT_CLIP = 500
 /** Simple Czech intent heuristic: send tools only for catalogue / product / price / quote / UI-action questions. */
 const TOOL_INTENT = /najd|naj[ií]t|hled|vyhled|p[řr][ií]d|odeb|odstra|sma[žz]|zm[ěe]n|uprav|otev[řr]|uka[žz]|zobraz|filtr|kategor|cen[auyěo]?\b|cenov|kolik|stoj[ií]|levn|drah|nab[ií]d|produkt|zbo[žz]|polo[žz]k|katalog|dodavatel|alsap|hydrotruck|trans.?technik|blatn|z[áa]bran|z[áa]st[ěe]r|box|maj[áa]k|dr[žz][áa]k|rezerv|hasic|[čc]erpad|kamer|sv[ěe]tl|n[áa]dob|kanystr|olej|n[áa]dr[žz]|z[áa]suv|nosi[čc]|dopra|doru[čc]|mno[žz]stv|kus|\bks\b|k[čc]\b|\d/i
 
+/** message refers to what the user sees right now (screen, open product, quote) */
+const SCREEN_REF = /nab[ií]d|ko[šs][ií]k|\btady\b|\bzde\b|\bto(m|hle|to)?\b|\bten(to|hle)?\b|\bta(to|hle)?\b|\btu(to|hle)?\b|otev[řr]en|obrazovc|vybran|kolik m[áa]m|celkem|tento produkt|str[áa]nk|vid[íi]m/i
+
 export function wantsTools(messages: ChatMessage[]): boolean {
   const last = messages[messages.length - 1].content
   if (TOOL_INTENT.test(last)) return true
@@ -719,7 +722,6 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
   async function chat(req: IncomingMessage, res: ServerResponse) {
     let messages: ChatMessage[]
     let context: string | null
-    let contextChanged = true
     let quote: Map<string, number>
     let choice: ModelChoice
     try {
@@ -732,7 +734,6 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       }
       messages = validateMessages(body)
       context = validateContext(body)
-      contextChanged = (body as { contextChanged?: unknown }).contextChanged !== false
       quote = validateQuote(body)
       const list = await modelList()
       const wanted = (body as { model?: unknown }).model
@@ -800,8 +801,8 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
 
     const modelTools = cloud ? cloud.tools : ollamaTools
     const toolDefs = wantsTools(messages) ? modelTools : []
-    // screen context only when it changed, on the first message, or when tools are sent
-    const sendContext = toolDefs.length > 0 || contextChanged || messages.filter((m) => m.role === 'user').length === 1
+    // screen context only when tools are sent or the message refers to the current screen / quote
+    const sendContext = toolDefs.length > 0 || SCREEN_REF.test(messages[messages.length - 1].content)
     let convo = promptMessages(messages, sendContext ? context : null, toolDefs.length > 0, modelTools.length > 0)
     let anyText = false
     let actions = 0

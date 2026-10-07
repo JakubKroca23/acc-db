@@ -416,8 +416,6 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     showNotice(null)
   }
 
-  let lastCtxKey = ''
-
   function renderModels() {
     const m = currentModel()
     modelBtnText.textContent = m ? shortLabel(m.label) : 'Vyberte model'
@@ -611,12 +609,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
       if (stick) scrollDown()
     }
 
-    // token saving: tell the server whether the screen context changed since the last message of this conversation
     const ctx = safe(host.getContext, null)
-    const ctxKey = JSON.stringify(ctx)
-    const firstMsg = history.filter((m) => m.role === 'user').length <= 1
-    const ctxChanged = firstMsg || ctxKey !== lastCtxKey
-    lastCtxKey = ctxKey
 
     try {
       const res = await apiFetch('/chat', {
@@ -625,7 +618,6 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
         body: JSON.stringify({
           messages: history,
           context: ctx,
-          contextChanged: ctxChanged,
           quote: safe(host.getQuote, []),
           ...(selectedModel ? { model: selectedModel } : {}),
         }),
