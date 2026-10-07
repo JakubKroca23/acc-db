@@ -18,16 +18,6 @@ function apiPlugin(env: Record<string, string>): Plugin {
     name: 'acc-db-api',
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
-        const u = req.url?.split('?')[0] || ''
-        if (u === '/acc-db' || u === '/' || u === '') {
-          const qs = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''
-          res.writeHead(302, { Location: `/acc-db/${qs}` })
-          res.end()
-          return
-        }
-        next()
-      })
-      server.middlewares.use((req, res, next) => {
         void gate.middleware(req, res, next)
       })
       server.middlewares.use((req, res, next) => {
@@ -36,16 +26,6 @@ function apiPlugin(env: Record<string, string>): Plugin {
     },
     configurePreviewServer(server) {
       handler.onServerStart()
-      server.middlewares.use((req, res, next) => {
-        const u = req.url?.split('?')[0] || ''
-        if (u === '/acc-db' || u === '/' || u === '') {
-          const qs = req.url?.includes('?') ? req.url.slice(req.url.indexOf('?')) : ''
-          res.writeHead(302, { Location: `/acc-db/${qs}` })
-          res.end()
-          return
-        }
-        next()
-      })
       server.middlewares.use((req, res, next) => {
         void gate.middleware(req, res, next)
       })
@@ -75,7 +55,7 @@ function apiPlugin(env: Record<string, string>): Plugin {
 export default defineConfig(({ mode }) => {
   const env = { ...loadEnv(mode, process.cwd(), ''), ...process.env } as Record<string, string>
   return {
-    base: env.VITE_BASE || '/acc-db/',
+    base: '/acc-db/',
     plugins: [apiPlugin(env)],
     server: { port: 5173, host: true },
     preview: {
