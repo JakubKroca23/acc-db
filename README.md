@@ -11,7 +11,7 @@ Produkce: https://zakazky.contsystem.cz/acc-db/
 - Globální vyhledávání + filtr dodavatele
 - **Související** skupiny (např. blatníky ↔ držáky ↔ zástěrky; boxy ↔ držáky boxů)
 - **Historie cen** při seedu (tabulka `price_history`) — v detailu produktu / nabídce
-- Košík / **cenová nabídka** s mezisoučty dle dodavatele, dopravou, tiskem/PDF, CSV a kopírováním do schránky
+- **Cenová nabídka** (tlačítko v hlavičce s průběžnou cenou bez DPH, celostránkové zobrazení `#/nabidka`) s mezisoučty dle dodavatele, dopravou, tiskem/PDF, CSV a kopírováním do schránky; filtr dodavatele je v hlavičce před vyhledáváním
 - Tlačítko **Aktualizovat katalog** (scrape + seed) se stavem průběhu
 
 ## Spuštění
@@ -77,7 +77,7 @@ Image obsahuje Python 3 kvůli aktualizaci katalogu z UI.
 
 - Ceny jsou orientační z veřejných katalogů — ne závazný ceník.
 - Appwrite API klíč zůstává na serveru; frontend volá jen `/api/*`.
-- Košík a poznámka nabídky jsou v `localStorage`.
+- Položky nabídky a poznámka jsou v `localStorage` (klíč `acc-db-cart-v2` zachován kvůli kompatibilitě).
 
 ## Appwrite / offline fallback
 

@@ -100,54 +100,44 @@ for (const sup of ['sup-tt', 'sup-alsap']) {
 }
 await page.waitForTimeout(300)
 
-// drawer animation — slow the animation clock 10× via CDP to capture mid-transition frames
-const cdp = await page.context().newCDPSession(page)
-await cdp.send('Animation.enable')
-await cdp.send('Animation.setPlaybackRate', { playbackRate: 0.1 })
-await page.locator('[data-action="toggle-cart"]').click()
-await page.waitForTimeout(900) // ≈ 90 ms of real animation time
-await shot(page, '03a-drawer-opening-mid')
-await page.waitForTimeout(1300)
-await shot(page, '03b-drawer-opening-late')
-await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 })
-await page.waitForTimeout(600)
-
-// sample real-time transform values for a report
-const samples = await page.evaluate(async () => {
-  const d = document.querySelector('.cart-drawer')
-  const b = document.querySelector('.backdrop')
-  const read = () => ({
-    x: Math.round(new DOMMatrix(getComputedStyle(d).transform).m41),
-    op: Number(getComputedStyle(b).opacity).toFixed(2),
-    vis: getComputedStyle(d).visibility,
-  })
-  const out = []
-  document.querySelector('[data-action="close-cart"]').click()
-  const t0 = performance.now()
-  while (performance.now() - t0 < 420) {
-    out.push({ t: Math.round(performance.now() - t0), ...read() })
-    await new Promise((r) => requestAnimationFrame(r))
+// header: supplier filter BEFORE search, „Cenová nabídka“ button with the live total badge
+const hdr = await page.evaluate(() => {
+  const x = (sel) => document.querySelector(sel)?.getBoundingClientRect().left ?? null
+  const btn = document.querySelector('.quote-btn')
+  return {
+    filterLeft: x('.header-filter select'),
+    searchLeft: x('.header-search'),
+    buttonText: btn?.textContent.trim().replace(/\s+/g, ' '),
+    badge: btn?.querySelector('.quote-badge')?.textContent,
+    title: btn?.getAttribute('title'),
+    drawerEls: document.querySelectorAll('.cart-drawer, .backdrop, [data-region="drawer"], [data-action="toggle-cart"]').length,
+    kosik: /ko[sš]ík/i.test(document.body.innerText),
+    addLabel: document.querySelector('button[data-add]')?.textContent,
   }
-  out.push({ t: 'end', ...read(), inDom: !!document.querySelector('.cart-drawer') })
-  return out.filter((_, i, a) => i % 4 === 0 || i === a.length - 1)
 })
-console.log('close-samples', JSON.stringify(samples))
+console.log('header', JSON.stringify(hdr))
+await shot(page, '03-hlavicka-filtr-hledani-nabidka', { clip: { x: 0, y: 0, width: 1440, height: 120 } })
+await shot(page, '03b-katalog-s-nabidkou')
 
-await page.locator('[data-action="toggle-cart"]').click()
-await page.waitForTimeout(600)
-const width = await page.evaluate(() => document.querySelector('.cart-drawer').getBoundingClientRect().width)
-console.log('drawer width', width)
-await shot(page, '03-drawer-open-wide')
-await page.keyboard.press('Escape')
-await page.waitForTimeout(500)
-console.log('after Esc open?', await page.evaluate(() => document.querySelector('.cart-drawer').classList.contains('open')))
-
-// quote view
+// quote view (full page)
+const scrollBefore = 900
+await page.evaluate((y) => window.scrollTo(0, y), scrollBefore)
+await page.waitForTimeout(200)
 await page.locator('[data-action="open-quote"]').first().click()
 await page.waitForTimeout(400)
 await waitThumbs(page)
 await page.waitForTimeout(800)
+console.log('quote url', new URL(page.url()).hash, 'back btn', await page.locator('[data-action="back-to-catalog"]').count())
 await shot(page, '04-cenova-nabidka', { fullPage: true })
+
+// quantity change in the quote updates the header badge live
+const badgeBefore = await page.locator('.quote-badge').textContent()
+await page.locator('.quote [data-qty] [data-inc]').first().click()
+await page.waitForTimeout(200)
+const badgeAfter = await page.locator('.quote-badge').textContent()
+console.log('badge live', badgeBefore, '→', badgeAfter)
+await page.locator('.quote [data-qty] [data-dec]').first().click()
+await page.waitForTimeout(200)
 
 // print rendering
 await page.emulateMedia({ media: 'print' })
@@ -156,20 +146,45 @@ await shot(page, '05-tisk-nahled', { fullPage: true })
 await page.pdf({ path: `${OUT}/${PREFIX}05-nabidka.pdf`, format: 'A4', printBackground: true, preferCSSPageSize: true })
 await page.emulateMedia({ media: 'screen' })
 
+// way back: button → catalog (same category, scroll restored); browser Back and Esc too
+await page.locator('[data-action="back-to-catalog"]').click()
+await page.waitForTimeout(500)
+console.log('back button →', JSON.stringify(await page.evaluate(() => ({ hash: location.hash, h1: document.querySelector('h1')?.textContent, y: Math.round(scrollY) }))))
+await page.locator('[data-action="open-quote"]').first().click()
+await page.waitForTimeout(300)
+await page.goBack()
+await page.waitForTimeout(500)
+console.log('browser back →', JSON.stringify(await page.evaluate(() => ({ hash: location.hash, h1: document.querySelector('h1')?.textContent, quote: !!document.querySelector('.quote') }))))
+await page.locator('[data-action="open-quote"]').first().click()
+await page.waitForTimeout(300)
+await page.keyboard.press('Escape')
+await page.waitForTimeout(500)
+console.log('Esc →', JSON.stringify(await page.evaluate(() => ({ hash: location.hash, quote: !!document.querySelector('.quote') }))))
+await page.reload({ waitUntil: 'networkidle' })
+console.log('persisted after reload, badge', await page.locator('.quote-badge').textContent())
+
 // mobile
 const m = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
 await m.goto(BASE, { waitUntil: 'networkidle' })
 await waitThumbs(m)
 await m.screenshot({ path: `${OUT}/${PREFIX}06a-mobil-vse.png` })
 await openCategory('podkladaci-desky', m)
-await m.screenshot({ path: `${OUT}/${PREFIX}06-mobil-katalog.png` })
 for (let i = 0; i < 2; i++) {
   await m.locator('button[data-add]').first().click()
   await m.waitForTimeout(200)
 }
 await m.evaluate(() => window.scrollTo(0, 0))
-await m.locator('[data-action="toggle-cart"]').click()
+await m.waitForTimeout(300)
+console.log('mobile header', JSON.stringify(await m.evaluate(() => {
+  const r = (sel) => { const b = document.querySelector(sel)?.getBoundingClientRect(); return b && [Math.round(b.left), Math.round(b.top), Math.round(b.width)] }
+  const sel = document.querySelector('.header-filter select')
+  return { brand: r('.brand'), btn: r('.quote-btn'), filter: r('.header-filter select'), search: r('.header-search'), selectClipped: sel ? sel.scrollWidth > sel.clientWidth : null, docOverflow: document.documentElement.scrollWidth > innerWidth }
+})))
+await m.screenshot({ path: `${OUT}/${PREFIX}06-mobil-katalog.png` })
+await m.screenshot({ path: `${OUT}/${PREFIX}06b-mobil-hlavicka.png`, clip: { x: 0, y: 0, width: 390, height: 170 } })
+await m.locator('[data-action="open-quote"]').click()
 await m.waitForTimeout(600)
-await m.screenshot({ path: `${OUT}/${PREFIX}07-mobil-kosik.png` })
+await waitThumbs(m)
+await m.screenshot({ path: `${OUT}/${PREFIX}07-mobil-nabidka.png` })
 
 await browser.close()

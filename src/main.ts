@@ -88,14 +88,20 @@ function slugFromHash(): string | null {
   return m ? decodeURIComponent(m[1]) : null
 }
 
-let selectedSlug: string | null = slugFromHash()
+// The quote („Cenová nabídka“) is a full-page view at #/nabidka (deep-linkable, browser Back returns to the catalog).
+const QUOTE_HASH = 'nabidka'
+
+let selectedSlug: string | null = slugFromHash() === QUOTE_HASH ? null : slugFromHash()
 let renderLimit = PAGE_SIZE
 let searchQ = ''
 let supplierFilter = ''
-let viewMode: 'browse' | 'search' | 'quote' = 'browse'
+let viewMode: 'browse' | 'search' | 'quote' = slugFromHash() === QUOTE_HASH ? 'quote' : 'browse'
 let priceHistoryCache: Record<string, PriceHistoryEntry[]> = {}
 let historyOpenId: string | null = null
-let cartOpen = false
+let cartHydrated = false
+/** true while the #/nabidka history entry was pushed by us → „Zpět do katalogu“ can use history.back() */
+let quotePushed = false
+let catalogScrollY = 0
 
 let catalogItems: Product[] = []
 let catalogSuppliers: string[] = []
@@ -145,6 +151,8 @@ async function loadBootstrap() {
       : `Katalog načten · ${types.length} druhů`
     statusError = false
     await hydrateCartProducts()
+    cartHydrated = true
+    if (viewMode === 'quote') render()
     await loadProductsForCurrent()
   } catch (err) {
     statusText = err instanceof Error ? err.message : 'Chyba načtení'
@@ -243,7 +251,7 @@ function setQty(productId: string, value: number) {
 function addOne(product: Product) {
   productsById.set(product.id, product)
   setQty(product.id, (cart[product.id] || 0) + 1)
-  toastMsg = `Přidáno: ${product.name.slice(0, 48)}`
+  toastMsg = `Přidáno do nabídky: ${product.name.slice(0, 48)}`
   window.setTimeout(() => {
     toastMsg = ''
     render()
@@ -430,10 +438,8 @@ function downloadCsv() {
 }
 
 function printQuote() {
-  // Print from the full-page quote view (drawer is screen-only), after thumbnails load.
-  viewMode = 'quote'
-  setCartOpen(false)
-  render()
+  // Print from the full-page quote view, after thumbnails load.
+  if (viewMode !== 'quote') openQuoteView()
   const imgs = [...document.querySelectorAll<HTMLImageElement>('#quote-print img')]
   const ready = imgs.map((img) =>
     img.complete
@@ -645,7 +651,7 @@ function showCategoryOnCards(): boolean {
 function productCardHtml(p: Product): string {
   const qty = cart[p.id] || 0
   return `
-    <article class="product-card ${qty ? 'in-cart' : ''}">
+    <article class="product-card ${qty ? 'in-quote' : ''}">
       <div class="thumb">${thumbHtml(p)}</div>
       <div class="product-body">
         <div class="product-meta-top">${supplierBadge(p.supplier)}${p.sku ? `<span class="sku">${escapeHtml(p.sku)}</span>` : ''}</div>
@@ -664,7 +670,7 @@ function productCardHtml(p: Product): string {
                   <input type="number" min="0" value="${qty}" aria-label="Množství" />
                   <button type="button" data-inc aria-label="Zvýšit">+</button>
                 </div>`
-              : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}">Přidat</button>`
+              : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}">Přidat do nabídky</button>`
           }
           <span class="spacer"></span>
           ${
@@ -678,7 +684,7 @@ function productCardHtml(p: Product): string {
     </article>`
 }
 
-function quotePanelHtml(embedded = false): string {
+function quotePanelHtml(): string {
   const lines = cartLines()
   const shipping = shippingForCart(lines)
   const goodsEx = lines.reduce((a, l) => a + l.lineExVat, 0)
@@ -687,10 +693,15 @@ function quotePanelHtml(embedded = false): string {
   const shipVat = shipping.reduce((a, s) => a + s.shippingVat, 0)
   const now = new Date().toLocaleString('cs-CZ')
 
+  const backBtn = `<div class="quote-back no-print">
+      <button type="button" class="btn btn-outline back-btn" data-action="back-to-catalog">← Zpět do katalogu</button>
+    </div>`
+
   if (!lines.length) {
-    return `<div class="quote-empty">
+    const loading = !cartHydrated && Object.keys(cart).length > 0
+    return `${backBtn}<div class="quote-empty">
       <h2>Cenová nabídka</h2>
-      <p>Zatím nic ve výběru. Vyberte produkty v katalogu tlačítkem „Přidat“.</p>
+      <p>${loading ? 'Načítám nabídku…' : 'Nabídka je zatím prázdná. Vyberte produkty v katalogu tlačítkem „Přidat do nabídky“.'}</p>
     </div>`
   }
 
@@ -767,7 +778,8 @@ function quotePanelHtml(embedded = false): string {
     .join('')
 
   return `
-    <div class="quote ${embedded ? 'embedded' : ''}" ${embedded ? '' : 'id="quote-print"'}>
+    ${backBtn}
+    <div class="quote" id="quote-print">
       <div class="print-brand print-only-block">
         <div class="print-brand-title">Katalog příslušenství</div>
         <div class="print-brand-meta">${escapeHtml(now)}</div>
@@ -781,7 +793,6 @@ function quotePanelHtml(embedded = false): string {
         <div class="quote-actions no-print">
           <button type="button" class="btn btn-outline" data-action="copy-quote">Kopírovat</button>
           <button type="button" class="btn btn-outline" data-action="csv-quote">CSV</button>
-          ${embedded ? `<button type="button" class="btn btn-outline" data-action="open-quote">Celá nabídka</button>` : ''}
           <button type="button" class="btn btn-primary" data-action="print-quote">Tisk / PDF</button>
         </div>
       </header>
@@ -821,9 +832,8 @@ function cartCount(): number {
 }
 
 // ── layout: static shell + region renders ─────────────────────────
-// The shell (header, search box, drawer, backdrop) is created ONCE. Regions are
-// re-rendered individually so the search input keeps focus while typing and the
-// drawer element persists — its CSS slide-out transition can actually play.
+// The shell (header with supplier filter, search box) is created ONCE. Regions are
+// re-rendered individually so the search input keeps focus while typing.
 const BASE = import.meta.env.BASE_URL
 
 app.innerHTML = `
@@ -832,9 +842,10 @@ app.innerHTML = `
       <a class="brand" href="${BASE}">
         <span class="brand-app">Katalog příslušenství</span>
       </a>
+      <div class="header-filter" data-region="header-filter"></div>
       <div class="header-search">
         <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <input class="search" type="search" placeholder="Hledat v celém katalogu…" aria-label="Hledat produkty" data-global-search />
+        <input class="search" type="search" placeholder="Hledat v katalogu…" aria-label="Hledat produkty" data-global-search />
       </div>
       <div class="header-actions" data-region="header-actions"></div>
     </header>
@@ -852,62 +863,37 @@ app.innerHTML = `
       </div>
     </div>
   </div>
-  <div class="backdrop no-print" data-action="close-cart" aria-hidden="true"></div>
-  <aside class="cart-drawer no-print" role="dialog" aria-modal="true" aria-labelledby="drawer-title" aria-hidden="true" inert>
-    <div class="cart-drawer-head">
-      <h2 id="drawer-title">Košík / nabídka</h2>
-      <button type="button" class="btn btn-ghost" data-action="close-cart" aria-label="Zavřít košík">Zavřít ✕</button>
-    </div>
-    <div class="cart-drawer-body" data-region="drawer"></div>
-  </aside>
 `
 
 const region = (name: string) => app.querySelector<HTMLElement>(`[data-region="${name}"]`)!
-const drawerEl = app.querySelector<HTMLElement>('.cart-drawer')!
-const backdropEl = app.querySelector<HTMLElement>('.backdrop')!
 const searchEl = app.querySelector<HTMLInputElement>('[data-global-search]')!
-let lastFocusBeforeDrawer: HTMLElement | null = null
 
-function setCartOpen(open: boolean) {
-  if (cartOpen === open) return
-  cartOpen = open
-  drawerEl.classList.toggle('open', open)
-  backdropEl.classList.toggle('open', open)
-  drawerEl.setAttribute('aria-hidden', String(!open))
-  document.documentElement.classList.toggle('drawer-open', open)
-  if (open) {
-    drawerEl.removeAttribute('inert')
-    lastFocusBeforeDrawer = document.activeElement as HTMLElement | null
-    renderDrawer()
-    // focus after the frame so the transform transition starts from the closed state
-    requestAnimationFrame(() => drawerEl.querySelector<HTMLElement>('[data-action="close-cart"]')?.focus({ preventScroll: true }))
-  } else {
-    drawerEl.setAttribute('inert', '')
-    lastFocusBeforeDrawer?.focus?.({ preventScroll: true })
-  }
-  renderHeaderActions()
+function renderHeaderFilter() {
+  region('header-filter').innerHTML = `
+    <select class="select" data-supplier aria-label="Dodavatel" title="${viewMode === 'quote' ? 'Filtr dodavatele platí pro katalog' : 'Filtrovat podle dodavatele'}" ${viewMode === 'quote' ? 'disabled' : ''}>
+      <option value="">Všichni dodavatelé</option>
+      ${catalogSuppliers
+        .map((s) => `<option value="${escapeAttr(s)}" ${s === supplierFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`)
+        .join('')}
+    </select>`
 }
 
 function renderHeaderActions() {
   const lines = cartLines()
   const shipping = shippingForCart(lines)
-  const goodsVat = lines.reduce((a, l) => a + l.lineVat, 0)
-  const shipVat = shipping.reduce((a, s) => a + s.shippingVat, 0)
-  const count = cartCount()
+  const totalEx = lines.reduce((a, l) => a + l.lineExVat, 0) + shipping.reduce((a, s) => a + s.shippingExVat, 0)
+  const totalVat = lines.reduce((a, l) => a + l.lineVat, 0) + shipping.reduce((a, s) => a + s.shippingVat, 0)
+  const pieces = cartCount()
+  const n = lines.length
+  const itemsWord = n === 1 ? 'položka' : n >= 2 && n <= 4 ? 'položky' : 'položek'
+  const title = n
+    ? `Cenová nabídka: ${n} ${itemsWord} (${pieces} ks) · celkem ${formatCzkExact(totalEx)} bez DPH / ${formatCzkExact(totalVat)} s DPH (vč. dopravy)`
+    : 'Cenová nabídka je zatím prázdná'
   region('header-actions').innerHTML = `
-    <select class="select" data-supplier aria-label="Dodavatel" ${viewMode === 'quote' ? 'disabled' : ''}>
-      <option value="">Všichni dodavatelé</option>
-      ${catalogSuppliers
-        .map((s) => `<option value="${escapeAttr(s)}" ${s === supplierFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`)
-        .join('')}
-    </select>
-    <button type="button" class="hdr-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote">
-      Nabídka${count ? ` <span class="count">${count}</span>` : ''}
-    </button>
-    <button type="button" class="btn btn-primary cart-btn" data-action="toggle-cart" aria-expanded="${cartOpen}" aria-controls="drawer-title">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.5L21 8H6.2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="20" r="1.4" fill="currentColor"/><circle cx="17" cy="20" r="1.4" fill="currentColor"/></svg>
-      <span class="cart-label">Košík</span>
-      <span class="cart-total">${formatCzk(goodsVat + shipVat)}</span>
+    <button type="button" class="quote-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" ${viewMode === 'quote' ? 'aria-current="page"' : ''}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z M14 3v5h5 M9 13h6 M9 17h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="quote-btn-label">Cenová nabídka</span>
+      ${n ? `<span class="quote-badge">${formatCzk(totalEx)}</span>` : ''}
     </button>`
 }
 
@@ -1017,22 +1003,12 @@ function appendMore() {
   observeMore()
 }
 
-function renderDrawer() {
-  // Skip while closed — content is refreshed on open; keeps re-renders cheap.
-  if (!cartOpen && drawerEl.dataset.rendered) return
-  drawerEl.dataset.rendered = '1'
-  const body = region('drawer')
-  const scroll = body.scrollTop
-  body.innerHTML = quotePanelHtml(true)
-  body.scrollTop = scroll
-}
-
 function render() {
+  renderHeaderFilter()
   renderHeaderActions()
   renderNav()
   renderNotices()
   renderMain()
-  renderDrawer()
   if (searchEl.value !== searchQ && document.activeElement !== searchEl) searchEl.value = searchQ
 }
 
@@ -1071,14 +1047,41 @@ async function prefetchCartHistory() {
   )
 }
 
-function openQuoteView() {
+function catalogUrl(): string {
+  return selectedSlug && selectedSlug !== ALL_SLUG ? `#/${selectedSlug}` : location.pathname + location.search
+}
+
+function openQuoteView(push = true) {
+  if (viewMode !== 'quote') catalogScrollY = window.scrollY
   viewMode = 'quote'
-  setCartOpen(false)
+  if (push && slugFromHash() !== QUOTE_HASH) {
+    history.pushState(null, '', `#/${QUOTE_HASH}`)
+    quotePushed = true
+  }
   render()
   window.scrollTo({ top: 0 })
   void prefetchCartHistory().then(() => {
     if (viewMode === 'quote') render()
   })
+}
+
+/** Back from the quote to where the user was in the catalog (category / search, scroll position). */
+function leaveQuote() {
+  quotePushed = false
+  viewMode = searchQ.trim() ? 'search' : 'browse'
+  if (viewMode === 'browse' && !selectedSlug) selectedSlug = ALL_SLUG
+  render()
+  if (!catalogItems.length && !catalogLoading) void loadProductsForCurrent()
+  window.scrollTo({ top: catalogScrollY })
+}
+
+function backToCatalog() {
+  if (quotePushed && slugFromHash() === QUOTE_HASH) {
+    history.back() // → hashchange → leaveQuote()
+    return
+  }
+  history.replaceState(null, '', catalogUrl())
+  leaveQuote()
 }
 
 // ── events (delegated once; regions re-render freely) ─────────────
@@ -1115,14 +1118,11 @@ app.addEventListener('click', (e) => {
   const actionEl = target.closest<HTMLElement>('[data-action]')
   if (!actionEl) return
   switch (actionEl.dataset.action) {
-    case 'toggle-cart':
-      setCartOpen(!cartOpen)
-      break
-    case 'close-cart':
-      setCartOpen(false)
-      break
     case 'open-quote':
       openQuoteView()
+      break
+    case 'back-to-catalog':
+      backToCatalog()
       break
     case 'clear':
       if (window.confirm('Opravdu vymazat celou nabídku?')) clearAll()
@@ -1169,6 +1169,11 @@ searchEl.addEventListener('input', () => {
   searchQ = searchEl.value
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => {
+    // typing a search from the quote view leaves the quote (keep the URL in sync)
+    if (viewMode === 'quote') {
+      history.replaceState(null, '', catalogUrl())
+      quotePushed = false
+    }
     if (searchQ.trim()) {
       viewMode = 'search'
       selectedSlug = null
@@ -1181,7 +1186,13 @@ searchEl.addEventListener('input', () => {
 })
 
 window.addEventListener('hashchange', () => {
-  const slug = slugFromHash() || ALL_SLUG
+  const hashSlug = slugFromHash()
+  if (hashSlug === QUOTE_HASH) {
+    if (viewMode !== 'quote') openQuoteView(false)
+    return
+  }
+  if (viewMode === 'quote') leaveQuote()
+  const slug = hashSlug || ALL_SLUG
   if (slug !== selectedSlug && (slug === ALL_SLUG || types.some((t) => t.slug === slug))) selectType(slug)
 })
 
@@ -1200,24 +1211,10 @@ app.addEventListener(
 )
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && cartOpen) {
+  // Esc in the quote view → back to the catalog (not while typing in a field)
+  if (e.key === 'Escape' && viewMode === 'quote' && !(e.target as HTMLElement).closest('input, textarea, select')) {
     e.preventDefault()
-    setCartOpen(false)
-    return
-  }
-  // simple focus trap inside the open drawer
-  if (e.key === 'Tab' && cartOpen) {
-    const focusables = [...drawerEl.querySelectorAll<HTMLElement>('button:not([disabled]), [href], input, textarea, select')]
-    if (!focusables.length) return
-    const first = focusables[0]
-    const last = focusables[focusables.length - 1]
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault()
-      last.focus()
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault()
-      first.focus()
-    }
+    backToCatalog()
   }
 })
 

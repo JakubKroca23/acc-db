@@ -53,10 +53,6 @@
   --shadow-card: 0 1px 2px rgba(24, 24, 27, 0.06), 0 1px 3px rgba(24, 24, 27, 0.04);
   --shadow-pop: 0 24px 80px -12px rgba(0, 40, 100, 0.35);
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-drawer-in: cubic-bezier(0.25, 0.8, 0.25, 1);
-  --ease-drawer-out: cubic-bezier(0.4, 0, 0.6, 1);
-  --drawer-w: min(640px, 92vw);
-  --drawer-dur: 320ms;
 
   /* One family everywhere (as cs-zakazky body): Inter, self-hosted via @fontsource-variable.
      Fallbacks are plain sans-serif only — nothing that could resolve to a cursive/comic face. */
@@ -79,7 +75,7 @@
 }
 
 html {
-  scrollbar-gutter: stable; /* no layout jump when the drawer locks scrolling */
+  scrollbar-gutter: stable; /* no layout jump between short and long views */
 }
 
 html,
@@ -91,10 +87,6 @@ body {
 body {
   min-height: 100dvh;
   font-size: 14px;
-}
-
-html.drawer-open {
-  overflow: hidden;
 }
 
 button,
@@ -149,6 +141,10 @@ h3 {
   letter-spacing: -0.01em;
   color: #fff;
   white-space: nowrap;
+}
+
+.header-filter {
+  flex-shrink: 0;
 }
 
 .header-search {
@@ -218,62 +214,59 @@ h3 {
   cursor: not-allowed;
 }
 
-.hdr-btn {
+/* „Cenová nabídka“ — the only quote entry point; badge = current total bez DPH */
+.quote-btn {
   height: 34px;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 14px;
+  gap: 8px;
+  padding: 0 6px 0 12px;
   border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.78);
+  border-radius: var(--radius-md);
+  background: var(--brand-blue);
+  color: #fff;
   font-family: var(--font-sans);
   font-weight: 600;
   font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background-color 150ms, color 150ms;
+  transition: background-color 150ms, box-shadow 150ms;
 }
 
-.hdr-btn:hover {
-  background: rgba(255, 255, 255, 0.07);
-  color: #fff;
+.quote-btn:not(:has(.quote-badge)) {
+  padding-right: 12px;
 }
 
-.hdr-btn.active {
-  background: rgba(0, 145, 255, 0.2);
-  color: #fff;
+.quote-btn:hover {
+  background: var(--brand-blue-hover);
 }
 
-.hdr-btn .count {
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
+.quote-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+.quote-btn.active {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
+
+.quote-btn svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.quote-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 8px;
   border-radius: 999px;
-  background: var(--brand-blue);
-  color: #fff;
-  font-size: 11px;
-  display: inline-grid;
-  place-items: center;
-}
-
-.cart-btn {
-  height: 34px;
-  gap: 8px;
-}
-
-.cart-btn svg {
-  width: 17px;
-  height: 17px;
-}
-
-.cart-total {
-  font-family: var(--font-sans);
+  background: #fff;
+  color: var(--brand-blue-ink);
+  font-size: 12px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  font-size: 12.5px;
-  font-weight: 600;
-  padding-left: 8px;
-  border-left: 1px solid rgba(255, 255, 255, 0.35);
 }
 
 .body-row {
@@ -679,7 +672,7 @@ textarea:focus {
   box-shadow: 0 4px 14px rgba(24, 24, 27, 0.08);
 }
 
-.product-card.in-cart {
+.product-card.in-quote {
   border-color: var(--brand-blue);
   box-shadow: 0 0 0 1px var(--brand-blue), 0 4px 14px rgba(0, 145, 255, 0.12);
 }
@@ -965,93 +958,7 @@ textarea:focus {
   font-size: 11.5px;
 }
 
-/* ── cart drawer ───────────────────────────────────────────────── */
-.backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  background: rgba(12, 13, 18, 0.45);
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    opacity var(--drawer-dur) var(--ease-drawer-out),
-    visibility 0s linear var(--drawer-dur);
-}
-
-.backdrop.open {
-  opacity: 1;
-  visibility: visible;
-  transition:
-    opacity var(--drawer-dur) var(--ease-drawer-in),
-    visibility 0s;
-}
-
-.cart-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 50;
-  width: var(--drawer-w);
-  display: flex;
-  flex-direction: column;
-  background: var(--background);
-  box-shadow: -24px 0 60px -20px rgba(12, 13, 18, 0.45);
-  transform: translate3d(100%, 0, 0);
-  visibility: hidden;
-  will-change: transform;
-  /* closing: slide out first, hide only after the transition has finished */
-  transition:
-    transform var(--drawer-dur) var(--ease-drawer-out),
-    visibility 0s linear var(--drawer-dur);
-}
-
-.cart-drawer.open {
-  transform: translate3d(0, 0, 0);
-  visibility: visible;
-  transition:
-    transform var(--drawer-dur) var(--ease-drawer-in),
-    visibility 0s;
-}
-
-.cart-drawer-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  height: var(--header-h);
-  padding: 0 10px 0 18px;
-  background: var(--titlebar);
-  color: #fff;
-  flex-shrink: 0;
-}
-
-.cart-drawer-head h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.cart-drawer-head .btn-ghost {
-  color: rgba(255, 255, 255, 0.82);
-}
-
-.cart-drawer-head .btn-ghost:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-}
-
-.cart-drawer-body {
-  flex: 1;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
-}
-
 @media (prefers-reduced-motion: reduce) {
-  :root {
-    --drawer-dur: 1ms;
-  }
   .toast {
     animation: none;
   }
@@ -1090,8 +997,9 @@ textarea:focus {
   font-weight: 700;
 }
 
-.quote.embedded h2 {
-  font-size: 17px;
+/* „← Zpět do katalogu“ above the quote */
+.quote-back {
+  margin: 0 0 12px;
 }
 
 .quote-date {
@@ -1204,18 +1112,6 @@ textarea:focus {
   font-size: 11px;
   color: #52525b;
   margin-top: 3px;
-}
-
-/* drawer: drop the unit-price column, show it inline under the name */
-/* fixed layout takes widths from the header row; display:none cells drop the column */
-.quote.embedded .q-unit-col {
-  display: none;
-}
-.quote.embedded .q-unit-inline {
-  display: block;
-}
-.quote.embedded .c-thumb {
-  width: 42px;
 }
 
 .quote-table th,
@@ -1367,15 +1263,6 @@ textarea:focus {
   display: none;
 }
 
-/* drawer: compact quote */
-.quote.embedded .quote-table .q-thumb-col {
-  width: 40px;
-}
-.quote.embedded .q-thumb {
-  width: 34px;
-  height: 34px;
-}
-
 /* ── responsive ────────────────────────────────────────────────── */
 @media (max-width: 1100px) {
   :root {
@@ -1403,9 +1290,19 @@ textarea:focus {
   .header-actions {
     order: 2;
   }
-  .header-search {
+  /* second row: supplier filter, then search (the ::before item forces the line break) */
+  .app-header::before {
+    content: '';
     order: 3;
     flex-basis: 100%;
+    height: 0;
+  }
+  .header-filter {
+    order: 4;
+  }
+  .header-search {
+    order: 5;
+    flex: 1 1 160px;
     max-width: none;
   }
   .body-row {
@@ -1449,27 +1346,12 @@ textarea:focus {
   .sidebar-foot {
     display: none;
   }
-  .cart-drawer-head {
-    height: 52px;
-  }
   .content {
     padding: 14px 12px 32px;
   }
 }
 
 @media (max-width: 640px) {
-  :root {
-    --drawer-w: 100vw;
-  }
-  .select {
-    max-width: 120px;
-  }
-  .hdr-btn {
-    padding: 0 10px;
-  }
-  .cart-label {
-    display: none;
-  }
   .product-grid {
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 8px;
@@ -1511,11 +1393,19 @@ textarea:focus {
   .brand-app {
     font-size: 14px;
   }
-  .select {
-    max-width: 112px;
+  .brand {
+    flex: 1 1 auto;
+    overflow: hidden;
   }
-  /* full quote stays reachable from the drawer („Celá nabídka“) */
-  .hdr-btn[data-action='open-quote'] {
+  .brand-app {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .quote-btn {
+    gap: 6px;
+    padding-left: 10px;
+  }
+  .quote-btn svg {
     display: none;
   }
 }
@@ -1536,8 +1426,6 @@ textarea:focus {
   }
   .app-header,
   .sidebar,
-  .backdrop,
-  .cart-drawer,
   .no-print,
   .toast,
   .update-status {
