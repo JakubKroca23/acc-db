@@ -59,6 +59,9 @@ export const SYSTEM_PROMPT_BASIC = [
   'Pravidla: Nemáš přístup k databázi produktů. U dotazu můžeš dostat „Aktuální obrazovka uživatele“ (co uživatel právě vidí: stránka, kategorie, filtr, produkty, nabídka se součty); o produktech, cenách a nabídce mluv jen podle ní. Nic si nevymýšlej; co nevíš, přiznej a poraď, kde to v katalogu najde. Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou). Vždy vykej.',
 ].join('\n')
 
+/** model has tools, but this message didn't look like a catalogue request → no tools sent this turn */
+const SYSTEM_PROMPT_LATER = `${SYSTEM_PROMPT_BASIC}\nV tomto kroku nemáte nástroje, ale jinak umíte hledat v katalogu, otevírat kategorie a detaily a upravovat nabídku – stačí, když uživatel napíše konkrétní požadavek (např. „Najdi blatníky do 500 Kč“).`
+
 const CONTEXT_MAX_BYTES = 8 * 1024
 const CONTEXT_MAX_DEPTH = 5
 
@@ -148,6 +151,20 @@ function readBody(req: IncomingMessage, limit: number): Promise<string> {
 }
 
 /** Validates the client conversation; returns the messages to send (oldest dropped beyond the limits). */
+const PROMPT_HISTORY = 6
+const ASSISTANT_CLIP = 500
+
+/** Simple Czech intent heuristic: send tools only for catalogue / product / price / quote / UI-action questions. */
+const TOOL_INTENT = /najd|naj[ií]t|hled|vyhled|p[řr][ií]d|odeb|odstra|sma[žz]|zm[ěe]n|uprav|otev[řr]|uka[žz]|zobraz|filtr|kategor|cen[auyěo]?\b|cenov|kolik|stoj[ií]|levn|drah|nab[ií]d|produkt|zbo[žz]|polo[žz]k|katalog|dodavatel|alsap|hydrotruck|trans.?technik|blatn|z[áa]bran|z[áa]st[ěe]r|box|maj[áa]k|dr[žz][áa]k|rezerv|hasic|[čc]erpad|kamer|sv[ěe]tl|n[áa]dob|kanystr|olej|n[áa]dr[žz]|z[áa]suv|nosi[čc]|dopra|doru[čc]|mno[žz]stv|kus|\bks\b|k[čc]\b|\d/i
+
+export function wantsTools(messages: ChatMessage[]): boolean {
+  const last = messages[messages.length - 1].content
+  if (TOOL_INTENT.test(last)) return true
+  // short confirmation ("ano", "ten první") right after Karel asked something → keep tools
+  const prev = messages[messages.length - 2]
+  return !!prev && prev.role === 'assistant' && last.trim().length <= 40 && /\?\s*$/.test(prev.content.trim())
+}
+
 export function validateMessages(body: unknown): ChatMessage[] {
   const list = (body as { messages?: unknown } | null)?.messages
   if (!Array.isArray(list) || !list.length) throw new HttpError(400, 'Chybí zprávy konverzace.')
@@ -535,12 +552,16 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     })
   }
 
-  function promptMessages(messages: ChatMessage[], context: string | null, withTools: boolean): Msg[] {
+  function promptMessages(all: ChatMessage[], context: string | null, withTools: boolean, canTools = false): Msg[] {
+    // token saving: only the last few turns, long assistant answers shortened
+    let messages = all.slice(-PROMPT_HISTORY)
+    while (messages.length > 1 && messages[0].role !== 'user') messages = messages.slice(1)
+    messages = messages.map((m, i) => (m.role === 'assistant' && i < messages.length - 1 && m.content.length > ASSISTANT_CLIP ? { ...m, content: `${m.content.slice(0, ASSISTANT_CLIP)}…` } : m))
     const last = messages[messages.length - 1].content
     // The static system prompt (+ tools) stays the exact same prefix → Ollama / Groq reuse their prompt cache.
     // The screen context rides in the LAST user message, so earlier turns stay cacheable too.
     return [
-      { role: 'system', content: withTools ? SYSTEM_PROMPT : SYSTEM_PROMPT_BASIC },
+      { role: 'system', content: withTools ? SYSTEM_PROMPT : canTools ? SYSTEM_PROMPT_LATER : SYSTEM_PROMPT_BASIC },
       ...messages.slice(0, -1),
       { role: 'user', content: context ? withContext(context, last) : last },
     ]
@@ -698,6 +719,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
   async function chat(req: IncomingMessage, res: ServerResponse) {
     let messages: ChatMessage[]
     let context: string | null
+    let contextChanged = true
     let quote: Map<string, number>
     let choice: ModelChoice
     try {
@@ -710,6 +732,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       }
       messages = validateMessages(body)
       context = validateContext(body)
+      contextChanged = (body as { contextChanged?: unknown }).contextChanged !== false
       quote = validateQuote(body)
       const list = await modelList()
       const wanted = (body as { model?: unknown }).model
@@ -775,8 +798,11 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       if (isGroq) line({ type: 'limits', model: choice.id, limits: limits.snapshot(choice.model) })
     }
 
-    const toolDefs = cloud ? cloud.tools : ollamaTools
-    let convo = promptMessages(messages, context, toolDefs.length > 0)
+    const modelTools = cloud ? cloud.tools : ollamaTools
+    const toolDefs = wantsTools(messages) ? modelTools : []
+    // screen context only when it changed, on the first message, or when tools are sent
+    const sendContext = toolDefs.length > 0 || contextChanged || messages.filter((m) => m.role === 'user').length === 1
+    let convo = promptMessages(messages, sendContext ? context : null, toolDefs.length > 0, modelTools.length > 0)
     let anyText = false
     let actions = 0
     const done = new Set<string>()
