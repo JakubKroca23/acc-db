@@ -1,6 +1,8 @@
 node_modules
 dist
 .env
+.env.bak*
+.env.*.bak
 .DS_Store
 *.local
 scripts/catalog-update-status.json

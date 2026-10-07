@@ -37,6 +37,60 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return e
 }
 
+/** Markdown line → plain readable line: headings, bullets and table rows (`| a | b |` → `a · b`). */
+export function plainLine(raw: string): { text: string; heading: boolean } | null {
+  // table separator rows (|---|:--:|) carry no content
+  if (/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(raw)) return null
+  let line = raw.replace(/\s+$/, '')
+  let heading = false
+  const h = line.match(/^\s{0,3}#{1,6}\s+(.*)$/)
+  if (h) {
+    line = h[1].replace(/\s+#+\s*$/, '')
+    heading = true
+  }
+  if (/^\s*\|.*\|\s*$/.test(line)) {
+    line = line
+      .trim()
+      .replace(/^\||\|$/g, '')
+      .split('|')
+      .map((c) => c.trim())
+      .filter(Boolean)
+      .join(' · ')
+  }
+  line = line.replace(/^(\s*)[-*+]\s+/, '$1• ')
+  line = line.replace(/<br\s*\/?>/gi, ' ')
+  return { text: line, heading }
+}
+
+/**
+ * Minimal, safe Markdown for model answers: **bold** and __bold__ → <strong>, headings bold, bullets „•“,
+ * tables as plain lines, `code` without backticks. Built with DOM nodes only (no innerHTML),
+ * so model output can never inject markup.
+ */
+export function setRichText(target: HTMLElement, text: string) {
+  const nodes: Node[] = []
+  const lines = text
+    .split('\n')
+    .map(plainLine)
+    .filter((l): l is { text: string; heading: boolean } => l !== null)
+  lines.forEach((l, i) => {
+    const parts = l.text.replace(/`([^`]+)`/g, '$1').split(/\*\*(.+?)\*\*|__(.+?)__/g)
+    // split with 2 groups → [text, g1, g2, text, g1, g2, …]
+    for (let k = 0; k < parts.length; k++) {
+      const part = parts[k]
+      if (!part) continue
+      const isBold = k % 3 !== 0 || l.heading
+      if (isBold) {
+        const strong = document.createElement('strong')
+        strong.textContent = part
+        nodes.push(strong)
+      } else nodes.push(document.createTextNode(part))
+    }
+    if (i < lines.length - 1) nodes.push(document.createTextNode('\n'))
+  })
+  target.replaceChildren(...nodes)
+}
+
 function loadHistory(): Msg[] {
   try {
     const raw = sessionStorage.getItem(HISTORY_KEY)
@@ -141,7 +195,9 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
 
   function bubble(m: Msg) {
     const row = el('div', `chat-row ${m.role === 'user' ? 'from-user' : 'from-assistant'}`)
-    const b = el('div', `chat-bubble${m.error ? ' is-error' : ''}`, m.content)
+    const b = el('div', `chat-bubble${m.error ? ' is-error' : ''}`)
+    if (m.role === 'assistant' && !m.error) setRichText(b, m.content)
+    else b.textContent = m.content
     if (m.model) b.title = `Odpověděl: ${m.model}`
     if (m.role === 'assistant') row.append(avatar('chat-msg-avatar'))
     row.append(b)
@@ -317,7 +373,7 @@ export function mountChatWidget(apiFetch: ApiFetch, getContext?: () => unknown) 
           answer.content += delta
           b.classList.remove('is-typing')
           b.removeAttribute('aria-label')
-          b.textContent = answer.content
+          setRichText(b, answer.content)
           if (stick) scrollDown()
         }
       }

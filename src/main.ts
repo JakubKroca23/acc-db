@@ -1313,7 +1313,7 @@ function chatProductLine(p: Product, withCategory: boolean): string {
     ...(p.sku ? [`kód ${p.sku}`] : []),
     ...(withCategory ? [typeName(p.typeSlug)] : []),
     `${bothPrices(p.price, p.priceVat)} za ${p.unit}`,
-  ].join(' | ')
+  ].join(' · ')
 }
 
 /** Products whose cards are (at least partly) on screen; fallback = the top of the list. */
@@ -1349,7 +1349,7 @@ function chatContext(): Record<string, unknown> {
             Položky: [
               ...lines
                 .slice(0, maxItems)
-                .map((l) => `${l.qty} ${l.product.unit} × ${l.product.name.slice(0, 70)} | ${l.product.supplier} | ${formatCzkExact(l.product.price)}/${l.product.unit} bez DPH | řádek ${bothPrices(l.lineExVat, l.lineVat)}`),
+                .map((l) => `${l.qty} ${l.product.unit} × ${l.product.name.slice(0, 70)}, ${l.product.supplier}, ${formatCzkExact(l.product.price)}/${l.product.unit} bez DPH, řádek ${bothPrices(l.lineExVat, l.lineVat)}`),
               ...(lines.length > maxItems ? [`… a dalších ${lines.length - maxItems} položek`] : []),
             ],
           }
@@ -1385,7 +1385,7 @@ function chatContext(): Record<string, unknown> {
                   : 'cena se zatím neměnila',
               ]
             : []),
-        ].join(' | ')
+        ].join(' · ')
       }
       if (maxProducts) {
         ctx['Produkty na obrazovce'] = visibleProducts(maxProducts).map((p) => chatProductLine(p, viewMode === 'search' || selectedSlug === ALL_SLUG))
