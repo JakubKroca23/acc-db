@@ -173,7 +173,6 @@ export const norm = (s: string) =>
     .replace(/[^a-z0-9.,/ -]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-/** crude Czech stemming: compare the first chars so „blatníky“ finds „Blatník“, „desky“ finds „deska“ */
 const stem = (t: string) => (t.length <= 4 ? t : t.slice(0, Math.max(4, t.length - 2)))
 
 function supplierFrom(v: unknown): (typeof SUPPLIERS)[number] | null {
@@ -243,7 +242,6 @@ export function createChatTools(data: CatalogData | undefined) {
     if (args.kategorie) {
       const { acc } = resolveCategory(accessories, args.kategorie)
       if (acc) {
-        // only the category itself (Blatníky ≠ Držáky blatníků); a parent without own products → its sub-categories
         const own = list.filter((p) => p.typeSlug === acc.slug)
         list = own.length ? own : list.filter((p) => accessories.find((a) => a.slug === p.typeSlug)?.parentSlug === acc.slug)
       }
@@ -265,8 +263,6 @@ export function createChatTools(data: CatalogData | undefined) {
       const all = scored.filter((x) => x.hits === toks.length)
       list = (all.length ? all : scored.filter((x) => x.hits > 0).sort((a, b) => b.hits - a.hits)).map((x) => x.p)
     }
-    // „blatník“ lists fenders before holders / spare parts that merely mention the word: products whose name
-    // starts with the first word, or whose own category starts with it, come first (each group by price)
     const lead = toks[0]
     const primary = (p: ToolProduct) => (lead ? norm(p.name).startsWith(lead) || norm(catName(accessories, p.typeSlug)).startsWith(lead) : true)
     const desc = args.razeni === 'cena_sestupne'
@@ -302,10 +298,6 @@ export function createChatTools(data: CatalogData | undefined) {
     }
   }
 
-  /**
-   * Executes one tool call. `quote` is this request's working copy of the user's quote (id → qty) — action
-   * tools update it so later tool calls in the same answer see the change.
-   */
   async function run(
     name: string,
     args: Record<string, unknown>,
@@ -374,7 +366,6 @@ export function createChatTools(data: CatalogData | undefined) {
         case 'stav_nabidky':
           return quoteSummary(quote, byId, accessories)
 
-        // ── actions (executed in the browser) ──
         case 'otevrit_kategorii': {
           const r = resolveCategory(accessories, args.kategorie)
           if (r.all) {
