@@ -1744,8 +1744,8 @@ textarea:focus {
 
 /* ── AI assistant „Kapitán Karel“ — floating, bottom-right ───────── */
 .chat-widget {
-  --chat-accent: var(--quote-badge-bg); /* indigo-600 */
-  --chat-accent-hover: #4338ca; /* indigo-700 */
+  --chat-accent: var(--brand-blue);
+  --chat-accent-hover: var(--brand-blue-hover);
   position: fixed;
   right: calc(18px + env(safe-area-inset-right, 0px));
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));
@@ -1767,7 +1767,7 @@ textarea:focus {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 10px 28px -6px rgba(49, 46, 129, 0.55), 0 2px 6px rgba(24, 24, 27, 0.15);
+  box-shadow: 0 10px 28px -6px rgba(0, 96, 168, 0.55), 0 2px 6px rgba(24, 24, 27, 0.15);
   transition: background 120ms, transform 120ms var(--ease-out);
 }
 
@@ -1780,7 +1780,7 @@ textarea:focus {
 }
 
 .chat-fab:focus-visible {
-  outline: 2px solid var(--quote-badge-ring);
+  outline: 2px solid #66bfff;
   outline-offset: 3px;
 }
 
@@ -1846,7 +1846,7 @@ textarea:focus {
   justify-content: space-between;
   gap: 8px;
   padding: 10px 10px 10px 14px;
-  background: var(--titlebar);
+  background: var(--brand-blue-ink);
   color: #fff;
 }
 
@@ -1860,7 +1860,7 @@ textarea:focus {
 .chat-head-avatar {
   width: 36px;
   height: 36px;
-  box-shadow: 0 0 0 2px var(--quote-hl);
+  box-shadow: 0 0 0 2px #66bfff;
 }
 
 .chat-title-text {
@@ -1892,7 +1892,7 @@ textarea:focus {
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23c7d2fe' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 5px center;
-  color: var(--quote-hl-ink);
+  color: #cfe9ff;
   font: inherit;
   font-size: 11.5px;
   line-height: 1.3;
@@ -1913,7 +1913,7 @@ textarea:focus {
 }
 
 .chat-model:focus-visible {
-  outline: 2px solid var(--quote-hl);
+  outline: 2px solid #66bfff;
   outline-offset: 1px;
 }
 
@@ -1973,7 +1973,7 @@ textarea:focus {
 
 .chat-model-row.is-selected {
   border-color: var(--chat-accent);
-  background: rgba(79, 70, 229, 0.06);
+  background: rgba(0, 145, 255, 0.06);
 }
 
 .chat-model-row:disabled {
@@ -2025,7 +2025,7 @@ textarea:focus {
 }
 
 .limit-ring:focus-visible {
-  outline: 2px solid #818cf8;
+  outline: 2px solid #66bfff;
   outline-offset: 1px;
 }
 
@@ -2065,7 +2065,7 @@ textarea:focus {
 }
 
 .ring.is-free .ring-track {
-  stroke: #a5b4fc;
+  stroke: #66bfff;
   stroke-dasharray: 3 2;
 }
 
@@ -2309,7 +2309,7 @@ textarea:focus {
   content: '';
   width: 10px;
   height: 10px;
-  border: 2px solid #c7d2fe;
+  border: 2px solid #b3dcff;
   border-top-color: var(--chat-accent);
   border-radius: 50%;
   animation: chat-spin 0.8s linear infinite;
@@ -2342,10 +2342,10 @@ textarea:focus {
   gap: 8px;
   max-width: 100%;
   padding: 3px 4px 3px 9px;
-  border: 1px solid #c7d2fe;
+  border: 1px solid #b3dcff;
   border-radius: 999px;
-  background: #eef2ff;
-  color: #312e81;
+  background: var(--brand-blue-muted);
+  color: var(--brand-blue-ink);
   font-size: 12px;
   line-height: 1.35;
 }
@@ -2454,7 +2454,7 @@ textarea:focus {
 .chat-input:focus {
   outline: none;
   border-color: var(--chat-accent);
-  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.18);
+  box-shadow: 0 0 0 3px rgba(0, 145, 255, 0.18);
 }
 
 .chat-input:disabled {
@@ -2526,10 +2526,10 @@ textarea:focus {
   display: inline-block;
   margin: 2px 2px;
   padding: 1px 8px;
-  border: 1px solid #c7d2fe;
+  border: 1px solid #b3dcff;
   border-radius: 999px;
-  background: #eef2ff;
-  color: #3730a3;
+  background: var(--brand-blue-muted);
+  color: var(--brand-blue-ink);
   font: inherit;
   font-size: 0.92em;
   font-weight: 600;
@@ -2538,7 +2538,7 @@ textarea:focus {
 }
 
 .chat-link:hover {
-  background: #e0e7ff;
+  background: #cfe9ff;
 }
 
 .chat-link.is-pridat {
@@ -2570,7 +2570,7 @@ textarea:focus {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #a5b4fc;
+  background: #66bfff;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
   cursor: help;
 }
