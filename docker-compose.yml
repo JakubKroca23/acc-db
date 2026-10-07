@@ -14,6 +14,12 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      # Přístup jen pro přihlášené v Contsystem Manageru s rolí (Appwrite label) z ACC_DB_ALLOWED_ROLES.
+      # Vypnutí (nouzově): ACC_DB_AUTH=off v .env a `docker compose up -d`.
+      - ACC_DB_AUTH=${ACC_DB_AUTH:-manager}
+      - ACC_DB_ALLOWED_ROLES=${ACC_DB_ALLOWED_ROLES:-dev}
+      - MANAGER_APPWRITE_ENDPOINT=${MANAGER_APPWRITE_ENDPOINT:-https://appwrite.propoj.app/v1}
+      - MANAGER_APPWRITE_PROJECT_ID=${MANAGER_APPWRITE_PROJECT_ID:-contsystem}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.acc-db.rule=Host(`zakazky.contsystem.cz`) && PathPrefix(`/acc-db`)"

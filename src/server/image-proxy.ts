@@ -183,7 +183,7 @@ async function loadImage(url: URL, key: string): Promise<Cached | null> {
 function send(res: ServerResponse, status: number, message: string) {
   res.statusCode = status
   res.setHeader('Content-Type', 'text/plain; charset=utf-8')
-  res.setHeader('Cache-Control', status === 400 || status === 403 ? 'no-store' : 'public, max-age=300')
+  res.setHeader('Cache-Control', status === 400 || status === 403 ? 'no-store' : 'private, max-age=300')
   res.end(message)
 }
 
@@ -221,7 +221,7 @@ export async function handleImageProxy(req: IncomingMessage, res: ServerResponse
   }
 
   res.setHeader('ETag', hit.etag)
-  res.setHeader('Cache-Control', `public, max-age=${BROWSER_MAX_AGE}, stale-while-revalidate=86400`)
+  res.setHeader('Cache-Control', `private, max-age=${BROWSER_MAX_AGE}, stale-while-revalidate=86400`)
   res.setHeader('X-Content-Type-Options', 'nosniff')
   res.setHeader('Content-Security-Policy', "default-src 'none'")
   if (req.headers['if-none-match'] === hit.etag) {

@@ -30,7 +30,15 @@ async function thumbStats(page) {
 }
 
 const browser = await chromium.launch({ headless: true })
-const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+// Auth gate (ACC_DB_AUTH=manager): pass the Manager session as SHOTS_COOKIE="a_session_contsystem=<secret>"
+const [cookieName, ...cookieRest] = (process.env.SHOTS_COOKIE || '').split('=')
+const cookies = cookieName && cookieRest.length ? [{ name: cookieName, value: cookieRest.join('='), url: new URL(BASE).origin }] : []
+async function newPage(opts) {
+  const ctx = await browser.newContext(opts)
+  if (cookies.length) await ctx.addCookies(cookies)
+  return ctx.newPage()
+}
+const page = await newPage({ viewport: { width: 1440, height: 900 } })
 await page.goto(BASE, { waitUntil: 'networkidle', timeout: 60000 })
 await page.evaluate(() => localStorage.clear())
 await page.reload({ waitUntil: 'networkidle' })
@@ -196,7 +204,7 @@ await page.reload({ waitUntil: 'networkidle' })
 console.log('persisted after reload, badge', await page.locator('.quote-badge').textContent())
 
 // mobile
-const m = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
+const m = await newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true })
 await m.goto(BASE, { waitUntil: 'networkidle' })
 await waitThumbs(m)
 await m.screenshot({ path: `${OUT}/${PREFIX}06a-mobil-vse.png` })

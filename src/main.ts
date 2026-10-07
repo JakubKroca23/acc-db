@@ -5,6 +5,38 @@ import { estimateShippingBySupplier, type ShippingEstimate } from './shipping'
 const STORAGE_KEY = 'acc-db-cart-v2'
 const NOTE_KEY = 'acc-db-quote-note'
 const API_BASE = `${import.meta.env.BASE_URL}api`
+const DEFAULT_LOGIN_URL = '/login?next=%2Facc-db%2F'
+
+/** API call; an expired Manager session (401 from the auth gate) sends the user to the Manager login. */
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', ...init })
+  if (res.status === 401) {
+    const data = (await res
+      .clone()
+      .json()
+      .catch(() => ({}))) as { login?: string }
+    window.location.href = data.login || DEFAULT_LOGIN_URL
+    throw new Error('Nepřihlášen — přesměrovávám na přihlášení')
+  }
+  return res
+}
+
+/** Logged-in Manager user (when the server-side gate is on). */
+let me: { name: string; email: string } | null = null
+let managerUrl = '/'
+
+async function loadMe() {
+  try {
+    const res = await apiFetch('/me')
+    if (!res.ok) return
+    const data = (await res.json()) as { user?: { name: string; email: string } | null; managerUrl?: string }
+    me = data.user || null
+    managerUrl = data.managerUrl || '/'
+    renderHeaderActions()
+  } catch {
+    /* optional */
+  }
+}
 const app = document.querySelector<HTMLDivElement>('#app')!
 if (!app) throw new Error('#app missing')
 
@@ -131,8 +163,9 @@ async function loadBootstrap() {
   render()
   try {
     const [accRes, statsRes] = await Promise.all([
-      fetch(`${API_BASE}/accessories`),
-      fetch(`${API_BASE}/stats`),
+      apiFetch(`/accessories`),
+      apiFetch(`/stats`),
+      loadMe(),
     ])
     const accData = await accRes.json()
     if (!accRes.ok) throw new Error(accData.error || `HTTP ${accRes.status}`)
@@ -165,7 +198,7 @@ async function hydrateCartProducts() {
   const missing = Object.keys(cart).filter((id) => !productsById.has(id))
   if (!missing.length) return
   try {
-    const res = await fetch(`${API_BASE}/products`)
+    const res = await apiFetch(`/products`)
     const data = await res.json()
     if (!res.ok) return
     for (const p of data.items as Product[]) productsById.set(p.id, p)
@@ -186,7 +219,7 @@ async function loadProductsForCurrent() {
       params.set('type', selectedSlug)
     }
     if (supplierFilter) params.set('supplier', supplierFilter)
-    const res = await fetch(`${API_BASE}/products?${params}`)
+    const res = await apiFetch(`/products?${params}`)
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     catalogItems = data.items as Product[]
@@ -468,7 +501,7 @@ async function triggerUpdate() {
       if (token) localStorage.setItem('acc-db-update-token', token)
     }
     if (token) headers['X-Update-Token'] = token
-    const res = await fetch(`${API_BASE}/catalog/update`, { method: 'POST', headers })
+    const res = await apiFetch(`/catalog/update`, { method: 'POST', headers })
     const data = await res.json()
     if (res.status === 401) {
       localStorage.removeItem('acc-db-update-token')
@@ -489,7 +522,7 @@ function startUpdatePolling() {
   window.clearInterval(updatePolling)
   updatePolling = window.setInterval(async () => {
     try {
-      const res = await fetch(`${API_BASE}/catalog/update/status`)
+      const res = await apiFetch(`/catalog/update/status`)
       if (!res.ok) return
       updateStatus = (await res.json()) as CatalogUpdateStatus
       render()
@@ -928,7 +961,14 @@ function renderHeaderActions() {
   const title = n
     ? `Cenová nabídka: ${n} ${itemsWord(n)} (${pieces} ks) · celkem ${formatCzkExact(totalEx)} bez DPH / ${formatCzkExact(totalVat)} s DPH (vč. dopravy)`
     : 'Cenová nabídka je zatím prázdná'
+  const userLink = me
+    ? `<a class="hdr-user" href="${escapeAttr(managerUrl)}" title="${escapeAttr(`Přihlášen: ${me.name || me.email}${me.email && me.name ? ` (${me.email})` : ''} — zpět do Contsystem Manageru`)}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 20c1.5-3.5 4.5-5 8-5s6.5 1.5 8 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span>${escapeHtml(me.name || me.email)}</span>
+      </a>`
+    : ''
   region('header-actions').innerHTML = `
+    ${userLink}
     <button type="button" class="quote-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" ${viewMode === 'quote' ? 'aria-current="page"' : ''}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z M14 3v5h5 M9 13h6 M9 17h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="quote-btn-label">Cenová nabídka</span>
@@ -1061,7 +1101,7 @@ async function togglePriceHistory(productId: string) {
   render()
   if (!priceHistoryCache[productId]) {
     try {
-      const res = await fetch(`${API_BASE}/price-history?productId=${encodeURIComponent(productId)}`)
+      const res = await apiFetch(`/price-history?productId=${encodeURIComponent(productId)}`)
       const data = (await res.json()) as { items?: PriceHistoryEntry[] }
       priceHistoryCache[productId] = data.items || []
     } catch {
@@ -1076,7 +1116,7 @@ async function prefetchCartHistory() {
   await Promise.all(
     ids.slice(0, 30).map(async (id) => {
       try {
-        const res = await fetch(`${API_BASE}/price-history?productId=${encodeURIComponent(id)}`)
+        const res = await apiFetch(`/price-history?productId=${encodeURIComponent(id)}`)
         const data = (await res.json()) as { items?: PriceHistoryEntry[] }
         priceHistoryCache[id] = data.items || []
       } catch {

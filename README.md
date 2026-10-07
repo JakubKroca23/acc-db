@@ -24,6 +24,16 @@ npm run seed           # sync do Appwrite
 npm run dev            # http://localhost:5173/acc-db/
 ```
 
+## Přístup (login Contsystem Manageru)
+
+Aplikace je dostupná jen uživatelům přihlášeným v Contsystem Manageru (`cs-zakazky`, stejná doména) s rolí z `ACC_DB_ALLOWED_ROLES` (výchozí `dev`).
+
+- Manager ukládá Appwrite session do httpOnly cookie `a_session_contsystem` (path `/`), prohlížeč ji posílá i na `/acc-db/`.
+- Server (`src/server/auth-gate.ts`) ji před každým požadavkem (HTML, assety, všechna `/api/*`) ověří přes `GET https://appwrite.propoj.app/v1/account` (projekt `contsystem`, hlavička `X-Appwrite-Session`) a zkontroluje Appwrite labels uživatele. Výsledek se cachuje 60 s (podle SHA-256 secretu). Není potřeba žádný API klíč.
+- Nepřihlášen: HTML → 302 na `/login?next=%2Facc-db%2F`, API → 401 JSON. Bez role: 403 („Nemáte přístup — aplikace je zatím dostupná jen pro vývojáře“). Appwrite nedostupný: 503 (fail closed).
+- `GET /api/me` vrací přihlášeného uživatele (jméno v hlavičce, odkaz zpět do Manageru).
+- Zapnutí: `ACC_DB_AUTH=manager` (v `docker-compose.yml` výchozí); lokální vývoj bez něj běží bez přihlášení. Nouzové vypnutí: `ACC_DB_AUTH=off` v `.env` na serveru.
+
 ## API (Vite middleware, base `/acc-db/`)
 
 | Method | Path | Popis |

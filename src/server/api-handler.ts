@@ -32,7 +32,13 @@ function loadCategoryMap() {
   }
 }
 
-export function createApiHandler(env: Record<string, string>) {
+type GateLike = {
+  enabled: boolean
+  userFor: (req: IncomingMessage) => { name: string; email: string; labels: string[] } | null
+  managerUrl: string
+}
+
+export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
   const databaseId = env.APPWRITE_DATABASE_ID || 'acc-db'
   const updateToken = env.ACC_DB_UPDATE_TOKEN || ''
 
@@ -257,6 +263,16 @@ export function createApiHandler(env: Record<string, string>) {
     try {
       if ((method === 'GET' || method === 'HEAD') && pathOnly === '/api/img') {
         await handleImageProxy(req, res, url)
+        return
+      }
+
+      if (method === 'GET' && pathOnly === '/api/me') {
+        const u = gate?.userFor(req)
+        json(res, 200, {
+          auth: !!gate?.enabled,
+          user: u ? { name: u.name, email: u.email, labels: u.labels } : null,
+          managerUrl: gate?.managerUrl || '/',
+        })
         return
       }
 
