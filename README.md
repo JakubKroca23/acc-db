@@ -1,28 +1,86 @@
-# Kalkulačka příslušenství vozidla
+# ACC-DB — Kalkulačka příslušenství vozidla
 
-Jednoduchá webová utilita (mobil + desktop) pro výběr příslušenství a přibližný odhad nákladů.
+Profesionální katalog a cenový odhad příslušenství pro stavitele nástaveb (české UI).
+Data: **Appwrite TablesDB** (`acc-db`) — tabulky `accessories` a `products`.
 
-Data jsou v **Appwrite** (`acc-db`):
-- `accessories` — druhy příslušenství (Blatníky, Maják, …)
-- `products` — konkrétní produkty s cenou, dodavatelem, rozměry a náhledem (ALSAP, Hydrotruck, …)
+Produkce: https://zakazky.contsystem.cz/acc-db/
+
+## Funkce
+
+- Procházení kategorií (Podvozek, Všechny nástavby, Hákový nosič, Ostatní)
+- Globální vyhledávání + filtr dodavatele
+- **Související** skupiny (např. blatníky ↔ držáky ↔ zástěrky; boxy ↔ držáky boxů)
+- Košík / **cenová nabídka** s mezisoučty dle dodavatele, dopravou, tiskem/PDF, CSV a kopírováním do schránky
+- Tlačítko **Aktualizovat katalog** (scrape + seed) se stavem průběhu
 
 ## Spuštění
 
 ```bash
-cp .env.example .env   # doplň APPWRITE_API_KEY
+cp .env.example .env   # doplň APPWRITE_API_KEY a ACC_DB_UPDATE_TOKEN
 npm install
-npm run seed           # sync typů + produktů do Appwrite
-npm run dev
+npm run scrape         # ALSAP + Trans-Technik (+ Hydrotruck)
+npm run seed           # sync do Appwrite
+npm run dev            # http://localhost:5173/acc-db/
 ```
 
-Otevři http://localhost:5173
+## API (Vite middleware, base `/acc-db/`)
 
-U každého druhu klikni **Přidat** → otevře se nápověda s filtrem (text + dodavatel), náhledy, rozměry a cenami.
+| Method | Path | Popis |
+|--------|------|--------|
+| GET | `/api/categories` | strom kategorií + related groups |
+| GET | `/api/accessories` | druhy příslušenství |
+| GET | `/api/products?type=&supplier=&q=` | produkty |
+| GET | `/api/stats` | statistiky + poslední update |
+| POST | `/api/catalog/update` | spustí scrape+seed (volitelně `X-Update-Token`) |
+| GET | `/api/catalog/update/status` | stav jobu |
+
+Token: `ACC_DB_UPDATE_TOKEN` v `.env`. Pokud není nastaven, update je povolen (vhodné jen pro privátní deploy).
+
+## Kategorie a related groups
+
+Mapování dodavatelských URL → `typeSlug` je v `scripts/category-map.json`.
+Related skupiny (kits):
+
+- blatníky + držáky blatníků + zástěrky
+- box na nářadí + držáky boxů
+- hasicí bedny + držáky hasičů
+- nádoby na vodu + držáky kanystrů
+- podkládací desky + klece
+- čerpadlo + olejová nádrž + olej
+
+## Scraper
+
+```bash
+npm run scrape   # → scripts/scraped_products.json
+npm run seed
+```
+
+Opravy oproti 1. verzi:
+
+- ALSAP stránkování `?f=OFFSET` (ne `strana=`)
+- leaf kategorie místo rodičů s JS pagerem
+- Trans-Technik: `product-types-card` **i** `product-types-table`
+- TT card ceny jsou **bez DPH** (dříve chybně dělené 1.21)
+
+## Docker
+
+```bash
+docker compose up -d --build
+```
+
+Image obsahuje Python 3 kvůli aktualizaci katalogu z UI.
 
 ## Poznámky
 
-- Ceny jsou z veřejných katalogů / orientační — ne závazný ceník.
-- Frontend čte data přes `/api/accessories` a `/api/products` (Vite middleware), API klíč zůstává na serveru.
-- Vlastní výroba je zatím vypnutá.
+- Ceny jsou orientační z veřejných katalogů — ne závazný ceník.
+- Appwrite API klíč zůstává na serveru; frontend volá jen `/api/*`.
+- Košík a poznámka nabídky jsou v `localStorage`.
 
-Produkce: `https://zakazky.contsystem.cz/acc-db/` — deploy `docker compose up -d --build`
+## Appwrite / offline fallback
+
+Pokud `APPWRITE_API_KEY` není platný, API automaticky čte `scripts/scraped_products.json`
+a `scripts/category-map.json` (vhodné pro vývoj a demo). Pro produkční sync spusťte
+`npm run seed` s klíčem, který má práva na TablesDB `acc-db`.
+
+Hydrotruck scrape může selhat na SSL z některých sítí — scrapery zachovají dříve
+stažené Hydrotruck položky, pokud je sloučíte ručně nebo běžíte scrape z povolené sítě.

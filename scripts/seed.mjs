@@ -18,29 +18,27 @@ if (!endpoint || !projectId || !apiKey) {
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const products = JSON.parse(readFileSync(join(__dirname, 'scraped_products.json'), 'utf8'))
+const categoryMap = JSON.parse(readFileSync(join(__dirname, 'category-map.json'), 'utf8'))
 
-/** @type {Array<Record<string, unknown>>} */
-const accessories = [
-  { slug: 'blatniky', name: 'Blatníky', category: 'Podvozek', unit: 'ks', priceApprox: 1400, priceMin: 360, priceMax: 9300, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.alsap.cz/blatniky-c10/', note: null, sortOrder: 10, parentSlug: null },
-  { slug: 'zasterky-do-blatniku', name: 'Zástěrky do blatníků', category: 'Podvozek', unit: 'ks', priceApprox: 770, priceMin: 100, priceMax: 2800, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.alsap.cz/zasterky-c76/', note: null, sortOrder: 11, parentSlug: 'blatniky' },
-  { slug: 'drzaky-blatniku', name: 'Držáky blatníků', category: 'Podvozek', unit: 'ks', priceApprox: 400, priceMin: 80, priceMax: 1200, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.trans-technik.cz/dily-na-nastavby-02-blatniky-a-prislusenstvi-drzaky-blatniku', note: null, sortOrder: 12, parentSlug: 'blatniky' },
-  { slug: 'bocni-zabrany', name: 'Boční zábrany', category: 'Podvozek', unit: 'ks', priceApprox: 1200, priceMin: 300, priceMax: 1800, source: 'ALSAP', sourceUrl: 'https://www.alsap.cz/bocni-zabrana-proti-podjeti-c5/', note: null, sortOrder: 20, parentSlug: null },
-  { slug: 'box-na-naradi', name: 'Box na nářadí', category: 'Podvozek', unit: 'ks', priceApprox: 4600, priceMin: 500, priceMax: 29000, source: 'ALSAP / Hydrotruck / Trans-Technik', sourceUrl: 'https://www.alsap.cz/bedny-na-naradi-c34/', note: null, sortOrder: 30, parentSlug: null },
-  { slug: 'drzak-rezervy', name: 'Držák rezervy', category: 'Podvozek', unit: 'ks', priceApprox: 2000, priceMin: 350, priceMax: 10000, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.alsap.cz/drzaky-rezervy-c77/', note: null, sortOrder: 40, parentSlug: null },
-  { slug: 'hasici-pristroj', name: 'Hasicí přístroj', category: 'Podvozek', unit: 'ks', priceApprox: 2500, priceMin: 800, priceMax: 4500, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.alsap.cz/bedny-na-hasici-pristroj-c235/', note: null, sortOrder: 50, parentSlug: null },
-  { slug: 'majak', name: 'Maják', category: 'Podvozek', unit: 'ks', priceApprox: 2400, priceMin: 1300, priceMax: 3100, source: 'ALSAP', sourceUrl: 'https://www.alsap.cz/led-majaky-c934/', note: null, sortOrder: 60, parentSlug: null },
-  { slug: 'nadoba-na-vodu', name: 'Nádoba na vodu', category: 'Podvozek', unit: 'ks', priceApprox: 610, priceMin: 90, priceMax: 4500, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.alsap.cz/kanystry-na-vodu-c234/', note: null, sortOrder: 70, parentSlug: null },
-  { slug: 'uzivatelska-zasuvka', name: 'Uživatelská zásuvka', category: 'Podvozek', unit: 'ks', priceApprox: 800, priceMin: 70, priceMax: 2500, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.alsap.cz/zasuvky-zastrcky-a-konektory-c520/', note: null, sortOrder: 80, parentSlug: null },
-  { slug: 'cerpadlo', name: 'Čerpadlo', category: 'Všechny nástavby', unit: 'ks', priceApprox: 12000, priceMin: 2200, priceMax: 28500, source: 'ALSAP / Hydrotruck / Trans-Technik', sourceUrl: 'https://www.alsap.cz/hydraulicka-cerpadla-spx-c598/', note: null, sortOrder: 110, parentSlug: null },
-  { slug: 'hydraulicky-olej', name: 'Hydraulický olej', category: 'Všechny nástavby', unit: 'L', priceApprox: 95, priceMin: 60, priceMax: 150, source: 'Hydrotruck / ALSAP', sourceUrl: 'https://www.hydrotruck.cz/', note: null, sortOrder: 120, parentSlug: null },
-  { slug: 'kamery', name: 'Kamery', category: 'Všechny nástavby', unit: 'ks', priceApprox: 5950, priceMin: 820, priceMax: 6500, source: 'ALSAP / Trans-Technik', sourceUrl: 'https://www.alsap.cz/parkovaci-kamery-c1228/', note: null, sortOrder: 130, parentSlug: null },
-  { slug: 'olejova-nadrz', name: 'Olejová nádrž', category: 'Všechny nástavby', unit: 'ks', priceApprox: 15000, priceMin: 5000, priceMax: 35000, source: 'Hydrotruck / Trans-Technik', sourceUrl: 'https://www.hydrotruck.cz/nadrze-hydraulicke-a-palivove', note: null, sortOrder: 140, parentSlug: null },
-  { slug: 'pracovni-svetla', name: 'Pracovní světla', category: 'Všechny nástavby', unit: 'ks', priceApprox: 1440, priceMin: 180, priceMax: 2500, source: 'ALSAP / Hydrotruck / Trans-Technik', sourceUrl: 'https://www.alsap.cz/led-pracovni-osvetleni-c134/', note: null, sortOrder: 150, parentSlug: null },
-  { slug: 'navarovaci-oko', name: 'Navařovací oko', category: 'Hákový nosič kontejneru', unit: 'ks', priceApprox: 450, priceMin: 90, priceMax: 2400, source: 'ALSAP', sourceUrl: 'https://www.alsap.cz/oka-upevnovaci-c31/', note: null, sortOrder: 160, parentSlug: null },
-  { slug: 'klece-na-podkladaci-desky', name: 'Klece na podkládací desky', category: 'Ostatní', unit: 'ks', priceApprox: 8500, priceMin: 5000, priceMax: 20000, source: 'ALSAP', sourceUrl: 'https://www.alsap.cz/kose-na-palety-c604/', note: null, sortOrder: 190, parentSlug: null },
-  { slug: 'podkladaci-desky', name: 'Podkládací desky', category: 'Ostatní', unit: 'ks', priceApprox: 1200, priceMin: 400, priceMax: 3500, source: 'tržní odhad', sourceUrl: null, note: null, sortOrder: 200, parentSlug: null },
-  { slug: 'vazaci-prostredky', name: 'Vázací prostředky', category: 'Ostatní', unit: 'ks', priceApprox: 800, priceMin: 65, priceMax: 1500, source: 'ALSAP', sourceUrl: 'https://www.alsap.cz/upinaci-popruhy-c1320/', note: null, sortOrder: 210, parentSlug: null },
-]
+const accessories = categoryMap.accessories.map((a) => {
+  const typeProducts = products.filter((p) => p.typeSlug === a.slug)
+  const prices = typeProducts.map((p) => Number(p.price)).filter((n) => n > 0)
+  const suppliers = [...new Set(typeProducts.map((p) => p.supplier).filter((s) => s !== 'tržní odhad'))]
+  return {
+    slug: a.slug,
+    name: a.name,
+    category: a.category,
+    unit: a.unit,
+    priceApprox: a.priceApprox,
+    priceMin: prices.length ? Math.min(...prices) : a.priceApprox,
+    priceMax: prices.length ? Math.max(...prices) : a.priceApprox,
+    source: suppliers.join(' / ') || 'katalog',
+    sourceUrl: null,
+    note: a.relatedGroup ? `related:${a.relatedGroup}` : null,
+    sortOrder: a.sortOrder,
+    parentSlug: a.parentSlug,
+  }
+})
 
 function productId(p) {
   const raw = `${p.supplier}|${p.productUrl || p.name}`
@@ -52,7 +50,6 @@ function safeUrl(value) {
   const trimmed = value.trim()
   if (!trimmed) return null
   try {
-    // Encode spaces/unsafe chars while keeping already-encoded sequences
     const url = new URL(trimmed.replace(/ /g, '%20'))
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
     return url.toString()
@@ -93,9 +90,10 @@ for (const item of accessories) {
   }
 }
 
-// delete products for removed types + re-seed
+// Remove products whose typeSlug is no longer in taxonomy (except keep during partial runs)
 let deletedProducts = 0
 let cursor
+const keepIds = new Set(products.filter((p) => p.typeSlug !== 'zadni-zabrana').map(productId))
 for (;;) {
   const queries = [Query.limit(100)]
   if (cursor) queries.push(Query.cursorAfter(cursor))
@@ -103,27 +101,30 @@ for (;;) {
   if (!batch.rows.length) break
   for (const row of batch.rows) {
     const typeSlug = row.typeSlug
-    if (typeSlug === 'zadni-zabrana' || !keepSlugs.has(typeSlug)) {
-      // only delete zadni-zabrana explicitly; keep unknown types for safety except zadni
-      if (typeSlug === 'zadni-zabrana') {
-        try {
-          await db.deleteRow({ databaseId, tableId: 'products', rowId: row.$id })
-          deletedProducts++
-        } catch {
-          /* ignore */
-        }
+    const shouldDelete =
+      typeSlug === 'zadni-zabrana' ||
+      (keepSlugs.has(typeSlug) === false && typeSlug) ||
+      (keepSlugs.has(typeSlug) && !keepIds.has(row.$id))
+    // Only aggressively delete unknown types that look obsolete; keep unknown during migration
+    if (typeSlug === 'zadni-zabrana' || (keepSlugs.has(typeSlug) && !keepIds.has(row.$id))) {
+      try {
+        await db.deleteRow({ databaseId, tableId: 'products', rowId: row.$id })
+        deletedProducts++
+      } catch {
+        /* ignore */
       }
     }
   }
   if (batch.rows.length < 100) break
   cursor = batch.rows[batch.rows.length - 1].$id
 }
-console.log('deleted zadni products', deletedProducts)
+console.log('deleted stale products', deletedProducts)
 
 let created = 0
 let updated = 0
 for (const p of products) {
   if (p.typeSlug === 'zadni-zabrana') continue
+  if (!keepSlugs.has(p.typeSlug)) continue
   const rowId = productId(p)
   const data = {
     name: p.name,
@@ -152,9 +153,22 @@ for (const p of products) {
     })
     created++
   }
+  if ((created + updated) % 100 === 0) {
+    console.log(`products progress ${created + updated}/${products.length}`)
+  }
 }
 
 const acc = await db.listRows({ databaseId, tableId: 'accessories', queries: [Query.limit(100)] })
 const prod = await db.listRows({ databaseId, tableId: 'products', queries: [Query.limit(1)] })
 console.log(`accessories: ${acc.total}`)
 console.log(`products: ${prod.total} (created ${created}, updated ${updated})`)
+console.log(
+  JSON.stringify({
+    ok: true,
+    accessories: acc.total,
+    products: prod.total,
+    created,
+    updated,
+    deletedProducts,
+  }),
+)

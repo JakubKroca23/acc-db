@@ -9,6 +9,15 @@ export interface AccessoryType {
   sortOrder: number
   slug: string
   parentSlug: string | null
+  relatedGroup?: string | null
+  relatedSlugs?: string[]
+  productCount?: number
+}
+
+export interface RelatedGroup {
+  id: string
+  label: string
+  slugs: string[]
 }
 
 export interface Product {
@@ -32,3 +41,18 @@ export interface CartLine {
 }
 
 export type CartMap = Record<string, number>
+
+export interface CatalogUpdateStatus {
+  state: 'idle' | 'running' | 'ok' | 'error'
+  phase: string
+  startedAt: string | null
+  finishedAt: string | null
+  logs: string[]
+  error: string | null
+  counts: {
+    total: number
+    bySupplier: Record<string, number>
+    byType: Record<string, number>
+  } | null
+  seed: { accessories: number; products: number; created: number; updated: number } | null
+}
