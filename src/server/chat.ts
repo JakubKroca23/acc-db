@@ -6,8 +6,9 @@
  * Env:
  *   OLLAMA_URL      default http://ollama:11434 (the `ollama` container on the shared docker network `ollama`)
  *   OLLAMA_MODEL    default qwen2.5:3b
- *   OLLAMA_TIMEOUT_MS  max. duration of one answer, default 120000
- *   OLLAMA_NUM_CTX  context window in tokens, default 8192 (system prompt + screen context + conversation)
+ *   OLLAMA_TIMEOUT_MS  max. duration of one answer, default 150000
+ *   OLLAMA_NUM_CTX  optional context window in tokens (default: Ollama's own; changing it reloads the model)
+ *   OLLAMA_WARMUP=off  disable pre-evaluating the system prompt at server start
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
@@ -15,7 +16,7 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
 const MAX_MESSAGES = 20
 const MAX_CONTENT = 4000
-const MAX_TOTAL_CHARS = 12000 // conversation; + system prompt + screen context must fit into num_ctx
+const MAX_TOTAL_CHARS = 8000 // conversation; prompt evaluation on the VPS CPU is only ~30 tokens/s
 const MAX_BODY_BYTES = 256 * 1024
 const FIRST_BYTE_TIMEOUT_MS = 90_000 // model (re)load + prompt evaluation on CPU
 const STATUS_TIMEOUT_MS = 3_000
@@ -37,7 +38,7 @@ export const SYSTEM_PROMPT = [
   '- Karta produktu (detail produktu): obrázek, štítek dodavatele, kód, název, rozměry, cena s DPH (tučně) a bez DPH za jednotku (ks nebo L), odkaz „Historie cen“ (rozbalí změny ceny v čase), odkaz „Detail ↗“ (otevře produkt na webu dodavatele) a tlačítko „Přidat do nabídky“. Když už produkt v nabídce je, je místo tlačítka počítadlo − / + pro množství.',
   '- Tlačítko „Cenová nabídka“ v hlavičce má odznak s celkovou cenou bez DPH a otevře stránku #/nabidka: položky seskupené podle dodavatele, cena za jednotku a za řádek bez i s DPH, změna množství, odebrání položky, odhad dopravy pro každého dodavatele, součty (Zboží celkem, Doprava celkem, Celkem – bez i s DPH), pole „Poznámka k nabídce“ a tlačítka „Kopírovat“ (text do schránky), „CSV“ (stáhne tabulku), „Tisk / PDF“ (vytisknout nebo uložit jako PDF), „Vymazat nabídku“ a „← Zpět do katalogu“ (nebo klávesa Esc). Nabídka se ukládá v prohlížeči uživatele.',
   '',
-  'Pravidla: Nemáš přístup k databázi produktů. O konkrétních produktech, cenách a nabídce mluv jen podle údajů o aktuální obrazovce uživatele, pokud je dostaneš. Nevymýšlej si produkty, ceny ani kódy; když údaj nemáš, řekni, že ho nevíš, a poraď, kde ho v katalogu najde (kategorie, vyhledávání, filtr dodavatele). Odpovídej krátce, nejvýše pár vět nebo stručný seznam.',
+  'Pravidla: Nemáš přístup k databázi produktů. U dotazu můžeš dostat údaje „Aktuální obrazovka uživatele“ (stránka, kategorie, filtr, produkty na obrazovce, otevřený detail produktu, obsah cenové nabídky se součty). O konkrétních produktech, cenách a nabídce mluv jen podle nich. Nevymýšlej si produkty, ceny ani kódy; když údaj nemáš, řekni, že ho nevíš, a poraď, kde ho v katalogu najde (kategorie, vyhledávání, filtr dodavatele). Odpovídej krátce, nejvýše pár vět nebo stručný seznam.',
 ].join('\n')
 
 const CONTEXT_MAX_BYTES = 8 * 1024
@@ -68,10 +69,28 @@ export function validateContext(body: unknown): string | null {
   return json === '{}' ? null : json
 }
 
-export function contextMessage(json: string): string {
+/** JSON → compact indented text (fewer tokens than JSON and easier for a small model to read). */
+export function renderContext(v: unknown, indent = ''): string {
+  if (Array.isArray(v)) {
+    return v
+      .map((x) => (x !== null && typeof x === 'object' ? `${indent}-\n${renderContext(x, indent + '  ')}` : `${indent}- ${String(x)}`))
+      .join('\n')
+  }
+  if (v !== null && typeof v === 'object') {
+    return Object.entries(v as Record<string, unknown>)
+      .map(([k, x]) => (x !== null && typeof x === 'object' ? `${indent}${k}:\n${renderContext(x, indent + '  ')}` : `${indent}${k}: ${String(x)}`))
+      .join('\n')
+  }
+  return `${indent}${String(v)}`
+}
+
+export function withContext(json: string, question: string): string {
   return [
-    `Aktuální obrazovka uživatele (JSON, stav v okamžiku dotazu): ${json}`,
-    'Pro dotazy na produkty, ceny, množství a cenovou nabídku používej výhradně údaje z tohoto JSONu (ceny opisuj přesně, jak jsou uvedené, a vždy řekni, zda jde o cenu bez DPH, nebo s DPH). Co v JSONu není, to nevíš — řekni to a poraď, kde to uživatel v katalogu najde. JSON nevypisuj celý, odpovídej vlastními slovy.',
+    'Aktuální obrazovka uživatele (údaje z aplikace v okamžiku dotazu):',
+    renderContext(JSON.parse(json)),
+    '(O produktech, cenách a nabídce odpovídej jen podle těchto údajů, ceny opisuj přesně a uveď, zda jsou bez DPH, nebo s DPH. Co v nich není, nevíš.)',
+    '',
+    `Dotaz: ${question}`,
   ].join('\n')
 }
 
@@ -141,8 +160,9 @@ export function validateMessages(body: unknown): ChatMessage[] {
 export function createChatHandler(env: Record<string, string | undefined>) {
   const baseUrl = (env.OLLAMA_URL || 'http://ollama:11434').trim().replace(/\/+$/, '')
   const model = (env.OLLAMA_MODEL || 'qwen2.5:3b').trim()
-  const totalTimeout = Math.max(5_000, Number(env.OLLAMA_TIMEOUT_MS) || 120_000)
-  const numCtx = Math.max(2048, Math.min(32768, Number(env.OLLAMA_NUM_CTX) || 8192))
+  const totalTimeout = Math.max(5_000, Number(env.OLLAMA_TIMEOUT_MS) || 150_000)
+  const numCtx = Number(env.OLLAMA_NUM_CTX) > 0 ? Math.max(2048, Math.min(32768, Number(env.OLLAMA_NUM_CTX))) : null
+  const options = numCtx ? { num_ctx: numCtx } : undefined
 
   /** GET /api/chat/status — is Ollama reachable and does it have the model? */
   async function status(res: ServerResponse) {
@@ -215,11 +235,13 @@ export function createChatHandler(env: Record<string, string | undefined>) {
           body: JSON.stringify({
             model,
             stream: true,
-            options: { num_ctx: numCtx },
+            ...(options ? { options } : {}),
+            // The static system prompt stays the exact same prefix → Ollama reuses its evaluated KV cache.
+            // The screen context rides in the LAST user message, so earlier turns stay cacheable too.
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
-              ...(context ? [{ role: 'system', content: contextMessage(context) }] : []),
-              ...messages,
+              ...messages.slice(0, -1),
+              { role: 'user', content: context ? withContext(context, messages[messages.length - 1].content) : messages[messages.length - 1].content },
             ],
           }),
           signal: ctrl.signal,
@@ -279,5 +301,35 @@ export function createChatHandler(env: Record<string, string | undefined>) {
     }
   }
 
-  return { chat, status, config: { baseUrl, model, numCtx } }
+  /** Pre-evaluate the (long, static) system prompt once at server start, so the first real question
+   *  doesn't pay ~40 s of CPU prompt evaluation. Best effort, errors ignored. */
+  function warmup() {
+    if ((env.OLLAMA_WARMUP || '').toLowerCase() === 'off') return
+    const t = setTimeout(async () => {
+      const t0 = Date.now()
+      try {
+        const r = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model,
+            stream: false,
+            options: { ...(options || {}), num_predict: 1 },
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: 'Ahoj' },
+            ],
+          }),
+          signal: AbortSignal.timeout(300_000),
+        })
+        await r.text()
+        console.log(`[acc-db chat] warm-up ${r.ok ? 'done' : `HTTP ${r.status}`} in ${Date.now() - t0} ms`)
+      } catch (err) {
+        console.warn('[acc-db chat] warm-up skipped:', err instanceof Error ? (err.cause as Error)?.message || err.message : err)
+      }
+    }, 3_000)
+    t.unref?.()
+  }
+
+  return { chat, status, warmup, config: { baseUrl, model, numCtx } }
 }

@@ -1301,18 +1301,19 @@ document.addEventListener('keydown', (e) => {
 render()
 void loadBootstrap()
 // ── AI assistant: compact snapshot of what the user sees (sent with every chat question) ──
-const CHAT_CTX_MAX = 7000 // bytes; the server caps at 8 kB
+// Kept small on purpose: the VPS CPU evaluates prompts at only ~30 tokens/s.
+const CHAT_CTX_MAX = 4000 // bytes of JSON; the server caps at 8 kB
 
-function chatProduct(p: Product, withCategory = true) {
-  return {
-    nazev: p.name.slice(0, 90),
-    dodavatel: p.supplier,
-    ...(p.sku ? { kod: p.sku } : {}),
-    ...(withCategory ? { kategorie: typeName(p.typeSlug) } : {}),
-    cenaBezDph: formatCzkExact(p.price),
-    cenaSDph: formatCzkExact(p.priceVat),
-    jednotka: p.unit,
-  }
+const bothPrices = (ex: number, vat: number) => `${formatCzkExact(ex)} bez DPH / ${formatCzkExact(vat)} s DPH`
+
+function chatProductLine(p: Product, withCategory: boolean): string {
+  return [
+    p.name.slice(0, 80),
+    p.supplier,
+    ...(p.sku ? [`kód ${p.sku}`] : []),
+    ...(withCategory ? [typeName(p.typeSlug)] : []),
+    `${bothPrices(p.price, p.priceVat)} za ${p.unit}`,
+  ].join(' | ')
 }
 
 /** Products whose cards are (at least partly) on screen; fallback = the top of the list. */
@@ -1336,69 +1337,69 @@ function chatContext(): Record<string, unknown> {
   const shipEx = shipping.reduce((a, s) => a + s.shippingExVat, 0)
   const shipVat = shipping.reduce((a, s) => a + s.shippingVat, 0)
   const t = currentType()
-  const quote = (maxItems: number) => ({
-    pocetPolozek: lines.length,
-    ...(lines.length
-      ? {
-          polozky: lines.slice(0, maxItems).map((l) => ({
-            nazev: l.product.name.slice(0, 80),
-            dodavatel: l.product.supplier,
-            ...(l.product.sku ? { kod: l.product.sku } : {}),
-            mnozstvi: `${l.qty} ${l.product.unit}`,
-            cenaZaJednotkuBezDph: formatCzkExact(l.product.price),
-            radekBezDph: formatCzkExact(l.lineExVat),
-            radekSDph: formatCzkExact(l.lineVat),
-          })),
-          ...(lines.length > maxItems ? { dalsichPolozekNeuvedeno: lines.length - maxItems } : {}),
-          zboziCelkemBezDph: formatCzkExact(goodsEx),
-          zboziCelkemSDph: formatCzkExact(goodsVat),
-          dopravaOdhadBezDph: formatCzkExact(shipEx),
-          dopravaOdhadSDph: formatCzkExact(shipVat),
-          celkemBezDph: formatCzkExact(goodsEx + shipEx),
-          celkemSDph: formatCzkExact(goodsVat + shipVat),
-          ...(quoteNote.trim() ? { poznamka: quoteNote.trim().slice(0, 200) } : {}),
-        }
-      : {}),
-  })
   const open = historyOpenId ? productsById.get(historyOpenId) : undefined
   const history = open ? priceHistoryCache[open.id] : undefined
+
+  const quote = (maxItems: number): Record<string, unknown> | string => {
+    if (!lines.length) return 'prázdná'
+    return {
+      'Počet položek': lines.length,
+      ...(maxItems
+        ? {
+            Položky: [
+              ...lines
+                .slice(0, maxItems)
+                .map((l) => `${l.qty} ${l.product.unit} × ${l.product.name.slice(0, 70)} | ${l.product.supplier} | ${formatCzkExact(l.product.price)}/${l.product.unit} bez DPH | řádek ${bothPrices(l.lineExVat, l.lineVat)}`),
+              ...(lines.length > maxItems ? [`… a dalších ${lines.length - maxItems} položek`] : []),
+            ],
+          }
+        : {}),
+      'Zboží celkem': bothPrices(goodsEx, goodsVat),
+      'Doprava (odhad)': bothPrices(shipEx, shipVat),
+      'Celkem včetně dopravy': bothPrices(goodsEx + shipEx, goodsVat + shipVat),
+      ...(quoteNote.trim() ? { Poznámka: quoteNote.trim().slice(0, 150) } : {}),
+    }
+  }
+
   const build = (maxProducts: number, maxItems: number): Record<string, unknown> => {
-    const base: Record<string, unknown> = {
-      obrazovka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : viewMode === 'search' ? 'Katalog – výsledky hledání' : 'Katalog',
+    const ctx: Record<string, unknown> = {
+      Stránka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : viewMode === 'search' ? 'Katalog – výsledky hledání' : 'Katalog',
     }
     if (viewMode !== 'quote') {
       if (viewMode === 'browse') {
-        base.kategorie = selectedSlug === ALL_SLUG ? 'Vše (celý katalog)' : t ? `${t.name} (skupina ${t.category})` : '—'
-        const related = relatedFor(selectedSlug).map((r) => r.name)
-        if (related.length && selectedSlug !== ALL_SLUG) base.souvisejiciKategorie = related.slice(0, 8)
+        ctx.Kategorie = selectedSlug === ALL_SLUG ? 'Vše (celý katalog)' : t ? `${t.name} (skupina ${t.category})` : '—'
+        const related = selectedSlug === ALL_SLUG ? [] : relatedFor(selectedSlug).map((r) => r.name)
+        if (related.length) ctx['Související kategorie'] = related.slice(0, 6).join(', ')
       }
-      base.filtrDodavatele = supplierFilter || 'Všichni dodavatelé'
-      if (searchQ.trim()) base.hledanyText = searchQ.trim().slice(0, 100)
-      base.pocetProduktuVSeznamu = catalogLoading ? 'načítá se' : catalogItems.length
+      ctx['Filtr dodavatele'] = supplierFilter || 'všichni'
+      if (searchQ.trim()) ctx['Hledaný text'] = searchQ.trim().slice(0, 80)
+      ctx['Počet produktů v seznamu'] = catalogLoading ? 'načítá se' : catalogItems.length
       if (open) {
-        base.otevrenyDetailProduktu = {
-          ...chatProduct(open),
-          ...(open.dimensions ? { rozmery: open.dimensions.slice(0, 80) } : {}),
+        ctx['Otevřený detail produktu (Historie cen)'] = [
+          chatProductLine(open, true),
+          ...(open.dimensions ? [`rozměry ${open.dimensions.slice(0, 60)}`] : []),
           ...(history
-            ? {
-                historieCen: history.length
-                  ? history.slice(0, 5).map((h) => `${formatHistoryDate(h.recordedAt)}: ${formatCzkExact(h.oldPriceVat)} → ${formatCzkExact(h.newPriceVat)} s DPH`)
-                  : 'beze změny',
-              }
-            : {}),
-        }
+            ? [
+                history.length
+                  ? `změny ceny: ${history.slice(0, 3).map((h) => `${formatHistoryDate(h.recordedAt)} ${formatCzkExact(h.oldPriceVat)} → ${formatCzkExact(h.newPriceVat)} s DPH`).join('; ')}`
+                  : 'cena se zatím neměnila',
+              ]
+            : []),
+        ].join(' | ')
       }
-      if (maxProducts) base.produktyNaObrazovce = visibleProducts(maxProducts).map((p) => chatProduct(p, viewMode === 'search' || selectedSlug === ALL_SLUG))
+      if (maxProducts) {
+        ctx['Produkty na obrazovce'] = visibleProducts(maxProducts).map((p) => chatProductLine(p, viewMode === 'search' || selectedSlug === ALL_SLUG))
+      }
     }
-    base.cenovaNabidka = quote(maxItems)
-    return base
+    ctx['Cenová nabídka'] = quote(maxItems)
+    return ctx
   }
   // shrink until it fits (fewer visible products first, then fewer quote lines)
-  for (const [mp, mi] of [[10, 25], [6, 25], [3, 15], [0, 10], [0, 5], [0, 0]]) {
+  for (const [mp, mi] of [[6, 12], [4, 8], [2, 5], [0, 5], [0, 0]]) {
     const ctx = build(mp, mi)
     if (new TextEncoder().encode(JSON.stringify(ctx)).length <= CHAT_CTX_MAX) return ctx
   }
-  return { obrazovka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : 'Katalog' }
+  return { Stránka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : 'Katalog' }
 }
 
 mountChatWidget(apiFetch, chatContext)

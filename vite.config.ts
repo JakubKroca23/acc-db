@@ -23,6 +23,7 @@ function apiPlugin(env: Record<string, string>): Plugin {
       })
     },
     configurePreviewServer(server) {
+      handler.onServerStart()
       server.middlewares.use((req, res, next) => {
         void gate.middleware(req, res, next)
       })

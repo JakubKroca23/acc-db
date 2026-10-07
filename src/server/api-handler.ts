@@ -253,7 +253,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
     return false
   }
 
-  return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+  const handler = async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
     const raw = req.url || ''
     const url = raw.replace(/^\/acc-db(?=\/)/, '')
     if (!url.startsWith('/api/')) return next()
@@ -445,4 +445,6 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       json(res, 500, { error: message })
     }
   }
+  /** called once when the HTTP server starts (not during `vite build`) */
+  return Object.assign(handler, { onServerStart: () => assistant.warmup() })
 }
