@@ -109,7 +109,9 @@ export function plainLine(raw: string): { text: string; heading: boolean } | nul
  * tables as plain lines, `code` without backticks. Built with DOM nodes only (no innerHTML),
  * so model output can never inject markup.
  */
-const LINK_RE = /\[\[(produkt|pridat|kategorie|nabidka)(?::([A-Za-z0-9_-]{1,64}))?\|([^\]\n]{1,80})\]\]/g
+const SUPPLIER_NAME: Record<string, string> = { alsap: 'ALSAP', 'trans-technik': 'Trans-Technik', hydrotruck: 'Hydrotruck', vsichni: 'vsichni' }
+const SUPPLIER_IDS = Object.keys(SUPPLIER_NAME)
+const LINK_RE = /\[\[(produkt|pridat|kategorie|nabidka|hledat|dodavatel)(?::([A-Za-z0-9_-]{1,64}))?\|([^\]\n]{1,80})\]\]/g
 
 /** [[kind:id|label]] → a button (only for ids the server validated against the catalogue), otherwise plain label */
 function linkNodes(text: string, refs: Refs | undefined): Node[] {
@@ -118,7 +120,7 @@ function linkNodes(text: string, refs: Refs | undefined): Node[] {
   for (const m of text.matchAll(LINK_RE)) {
     if (m.index! > at) out.push(document.createTextNode(text.slice(at, m.index)))
     const [, kind, id = '', label] = m
-    const ok = kind === 'nabidka' || (kind === 'kategorie' ? !!refs?.categories?.includes(id) : !!refs?.products?.[id])
+    const ok = kind === 'nabidka' || kind === 'hledat' || (kind === 'dodavatel' && SUPPLIER_IDS.includes(id)) || (kind === 'kategorie' ? !!refs?.categories?.includes(id) : !!refs?.products?.[id])
     if (ok) {
       const b = document.createElement('button')
       b.type = 'button'
@@ -312,13 +314,14 @@ function refreshPop() {
 }
 
 /** ring of the tightest limit; hover / click shows the details */
-function limitRing(m: ModelOption, size: number, getModel: () => ModelOption | undefined): HTMLElement {
+function limitRing(m: ModelOption, size: number, getModel: () => ModelOption | undefined, named = false): HTMLElement {
   const { pct } = limitSummary(m)
   const wrap = el('span', 'limit-ring')
   wrap.tabIndex = 0
   wrap.setAttribute('role', 'button')
   wrap.setAttribute('aria-label', m.provider === 'ollama' ? 'bez limitu' : pct === null ? 'limity zatím bez dat' : `zbývá ${Math.round(pct)} % limitu – podrobnosti`)
   wrap.append(ring(pct, size, m.provider === 'ollama'))
+  if (named) wrap.title = shortLabel(m.label)
   wrap.addEventListener('mouseenter', () => showPop(wrap, getModel))
   wrap.addEventListener('mouseleave', () => hidePop(200))
   wrap.addEventListener('focus', () => showPop(wrap, getModel))
@@ -397,6 +400,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   const modelBtnText = el('span', 'chat-model-text', 'Načítám modely…')
   modelBtn.append(modelBtnText)
   modelBtn.disabled = true
+  let helpers: ModelOption[] = [] // cloud helper models (limits only)
   const headGauge = el('span', 'chat-head-gauge')
   const modelLine = el('div', 'chat-model-line')
   modelLine.append(modelBtn, headGauge)
@@ -435,6 +439,8 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     const product = [...messages].reverse().map((m) => m.refs?.products?.[id]).find(Boolean)
     try {
       if (kind === 'nabidka') host.applyAction({ name: 'otevrit_nabidku', args: {}, label: '' })
+      else if (kind === 'hledat') host.applyAction({ name: 'hledat_v_katalogu', args: { text: b.textContent || '' }, label: '' })
+      else if (kind === 'dodavatel') host.applyAction({ name: 'nastavit_filtr_dodavatele', args: { dodavatel: SUPPLIER_NAME[id] || id }, label: '' })
       else if (kind === 'kategorie') host.applyAction({ name: 'otevrit_kategorii', args: { slug: id }, label: '' })
       else if (product && kind === 'produkt') host.applyAction({ name: 'otevrit_detail_produktu', args: { id }, label: '', product })
       else if (product && kind === 'pridat') {
@@ -612,7 +618,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     modelBtnText.textContent = m ? shortLabel(m.label) : 'Vyberte model'
     modelBtn.disabled = loading || models.length < 2
     headGauge.replaceChildren()
-    if (m) headGauge.append(limitRing(m, 30, currentModel))
+    for (const h of helpers) headGauge.append(limitRing(h, 26, () => helpers.find((y) => y.id === h.id), true))
     // simple rows: name + one description line + tiny gauge on the right
     menu.replaceChildren(
       ...models.map((x) => {
@@ -659,7 +665,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   }
 
   function applyLimits(id: string, limits: ModelLimits | null | undefined) {
-    const m = models.find((x) => x.id === id)
+    const m = models.find((x) => x.id === id) || helpers.find((x) => x.id === id)
     if (!m || !limits) return
     m.limits = limits
     renderModels()
@@ -672,9 +678,10 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     try {
       const res = await apiFetch(`/chat/status${probe ? '?probe=1' : ''}`)
       if (!res.ok) return
-      const s = (await res.json()) as { models?: ModelOption[]; default?: string; available?: boolean; error?: string | null; now?: number }
+      const s = (await res.json()) as { models?: ModelOption[]; helpers?: ModelOption[]; default?: string; available?: boolean; error?: string | null; now?: number }
       if (typeof s.now === 'number') serverSkew = s.now - Date.now()
       models = Array.isArray(s.models) ? s.models : []
+      helpers = Array.isArray(s.helpers) ? s.helpers : []
       if (!models.length) {
         showNotice(s.available ? null : s.error || `${NAME} zatím není dostupný.`)
         return

@@ -50,7 +50,7 @@ export const SYSTEM_PROMPT = [
   '- Produkty, ceny, kódy a rozměry vždy zjisti nástrojem hledat_produkty nebo detail_produktu; nic si nevymýšlej. Cena ve filtru je bez DPH. Obsah nabídky zjistíš nástrojem stav_nabidky.',
   '- Akce v aplikaci (kategorie, filtr, hledání, zobrazení produktu, změny nabídky) dělej nástroji jen na žádost uživatele; id produktu ber jen z výsledků nástrojů. Pak stručně potvrď, co jsi udělal. Chybu nebo prázdný výsledek přiznej.',
   '- „Aktuální obrazovka uživatele“ u dotazu = co uživatel právě vidí.',
-  '- Odkazy jako tlačítka: [[produkt:ID|Zobrazit]], [[pridat:ID|Přidat do nabídky]], [[kategorie:SLUG|Název]], [[nabidka|Otevřít nabídku]]; ID a SLUG (kategorie_slug) ber jen z výsledků nástrojů.',
+  '- Odkazy jako tlačítka: [[produkt:ID|Zobrazit]], [[pridat:ID|Přidat do nabídky]], [[kategorie:SLUG|Název]], [[nabidka|Otevřít nabídku]], [[hledat|text hledání]], [[dodavatel:alsap|Jen ALSAP]] (alsap, trans-technik, hydrotruck, vsichni); ID a SLUG (kategorie_slug) ber jen z výsledků nástrojů. Na konec odpovědi dej 1–2 nejužitečnější tlačítka (další krok).',
   '- Odpovídej krátce prostým textem bez Markdownu (žádné tabulky, nadpisy ani hvězdičky; seznam s pomlčkou). Vždy vykej.',
 ].join('\n')
 
@@ -67,7 +67,7 @@ export const SYSTEM_PROMPT_LOCAL = [
   '- Vlevo menu kategorií („Vše“ = celý katalog), nahoře „Hledat v katalogu…“ (název, rozměr, kód) a filtr dodavatele.',
   '- Karta produktu: cena bez DPH a s DPH, „Přidat do nabídky“ (pak − +), „Historie cen“, „Detail ↗“ = web dodavatele.',
   '- Tlačítko „Cenová nabídka“ vpravo nahoře: položky, množství, odhad dopravy, součty, Poznámka, Kopírovat, CSV, Tisk / PDF, Vymazat nabídku. Nabídka se ukládá pro Vašeho uživatele.',
-  'Produkty ani ceny si nevymýšlej – poraď, ať se zeptá konkrétně (např. „Najdi blatníky do 500 Kč“), pak je dohledáte v katalogu. Odkaz na nabídku napiš jako [[nabidka|Otevřít nabídku]].',
+  'Produkty ani ceny si nevymýšlej – poraď, ať se zeptá konkrétně (např. „Najdi blatníky do 500 Kč“), pak je dohledáte v katalogu. Tlačítka (pište je přímo do odpovědi): [[nabidka|Otevřít nabídku]], [[hledat|blatníky]] (spustí hledání s tímto textem), [[dodavatel:alsap|Jen ALSAP]] (alsap, trans-technik, hydrotruck, vsichni). Produkty a kategorie jako tlačítko jen z ověřených faktů.',
   'Pravidla odpovědi: odpověz přímo na otázku jako první větou; nabídni jeden konkrétní další krok; když něco nevíš, řekni to. Z poskytnutých faktů nic neměň (ceny, kódy, odkazy).',
   'Příklad: „Kde najdu historii cen?“ → „Otevřete kartu produktu a klikněte na „Historie cen“. Chcete, abych nějaký produkt vyhledal?“',
   'Příklad: „Jak vytisknu nabídku?“ → „V Cenové nabídce klikněte na „Tisk / PDF“. [[nabidka|Otevřít nabídku]]“',
@@ -77,7 +77,7 @@ export const SYSTEM_PROMPT_LOCAL = [
 export const SYSTEM_PROMPT_DELEGATE = [
   'Jsi Kapitán Karel, asistent katalogu příslušenství pro nákladní vozidla (dodavatelé ALSAP, Trans-Technik, Hydrotruck). Uživateli vždy vykej.',
   '- Produkty a ceny zjisti nástroji, nic si nevymýšlej; akce v aplikaci dělej jen na žádost, id ber jen z výsledků nástrojů. Ceny uváděj s „bez DPH“ / „s DPH“.',
-  '- Odkazy jako tlačítka: [[produkt:ID|Zobrazit]], [[pridat:ID|Přidat do nabídky]], [[kategorie:SLUG|Název]], [[nabidka|Otevřít nabídku]]; ID a SLUG (kategorie_slug) ber jen z výsledků nástrojů.',
+  '- Odkazy jako tlačítka: [[produkt:ID|Zobrazit]], [[pridat:ID|Přidat do nabídky]], [[kategorie:SLUG|Název]], [[nabidka|Otevřít nabídku]], [[hledat|text hledání]], [[dodavatel:alsap|Jen ALSAP]] (alsap, trans-technik, hydrotruck, vsichni); ID a SLUG (kategorie_slug) ber jen z výsledků nástrojů. Na konec odpovědi dej 1–2 nejužitečnější tlačítka (další krok).',
   '- Tvůj výstup čte jiný model, ne uživatel: vrať jen stručná ověřená fakta (název, cena bez/s DPH, kód, rozměr) po jednom produktu na řádek s odkazy; bez úvodu a bez omáčky.',
 ].join('\n')
 
@@ -288,7 +288,7 @@ function groqLabel(model: string) {
 
 function ollamaLabel(model: string) {
   const m = model.match(/^qwen2\.5:(\d+(?:\.\d+)?)b$/i)
-  return m ? `Lokální – Qwen 2.5 ${m[1]}B (server)` : `Lokální – ${model} (server)`
+  return m ? `Lokální – Qwen 2.5 ${m[1]}B` : `Lokální – ${model}`
 }
 
 /** Google Gemini via its OpenAI-compatible endpoint (streaming + tools work; Gemini 3 needs thought signatures echoed). */
@@ -590,6 +590,9 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       default: def.id,
       available: models.some((m) => m.available),
       now: Date.now(),
+      helpers: list
+        .filter((m) => m.provider !== 'ollama' && delegateList.includes(m.id))
+        .map(({ usable, ...m }) => ({ ...m, available: usable, limits: clouds[m.provider as 'groq' | 'gemini'].limits.snapshot(m.model) })),
       // legacy fields (local model)
       model,
       error: models.some((m) => m.available) ? null : MSG_UNAVAILABLE,
@@ -597,12 +600,13 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
   }
 
   /** LOCAL_DELEGATE_MODEL: comma list of cloud models doing tool work for the local model ('off' = never) */
-  const delegateList = (env.LOCAL_DELEGATE_MODEL || 'groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash')
+  const delegateList = (env.LOCAL_DELEGATE_MODEL || 'groq:openai/gpt-oss-20b,gemini:gemini-2.5-flash,groq:qwen/qwen3.8-27b,gemini:gemini-2.5-flash-lite,groq:openai/gpt-oss-120b')
     .split(',')
     .map((x) => x.trim())
     .filter((x) => x && x !== 'off')
-  function pickDelegate(): { cloud: Cloud; model: string; id: string; label: string } | null {
+  function pickDelegate(skip: Set<string> = new Set()): { cloud: Cloud; model: string; id: string; label: string } | null {
     for (const id of delegateList) {
+      if (skip.has(id)) continue
       const [prov, ...rest] = id.split(':')
       const model = rest.join(':')
       const cloud = prov === 'groq' || prov === 'gemini' ? clouds[prov] : undefined
@@ -825,11 +829,27 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     // Local model + a catalogue/action question → the tool loop AND the short final answer run on a fast cheap
     // cloud model (prompt evaluation of tool results on the VPS CPU would take tens of seconds). Plain chat stays local.
     const wants = wantsTools(messages)
-    const delegate = choice.provider === 'ollama' && wants && !ollamaTools.length ? pickDelegate() : null
-    const cloud = delegate ? delegate.cloud : choice.provider === 'ollama' ? null : clouds[choice.provider]
-    const runModel = delegate ? delegate.model : choice.model
+    let delegate = choice.provider === 'ollama' && wants && !ollamaTools.length ? pickDelegate() : null
+    let cloud = delegate ? delegate.cloud : choice.provider === 'ollama' ? null : clouds[choice.provider]
+    let runModel = delegate ? delegate.model : choice.model
     const isGroq = !!cloud // = OpenAI-compatible cloud (GroqCloud or Gemini)
-    const limits = cloud?.limits ?? clouds.groq.limits
+    let limits = cloud?.limits ?? clouds.groq.limits
+    const failedDelegates = new Set<string>()
+    /** helper exhausted / failing → continue with the next model from LOCAL_DELEGATE_MODEL (tool results so far are kept) */
+    const switchDelegate = (): boolean => {
+      if (!delegate) return false
+      failedDelegates.add(delegate.id)
+      const next = pickDelegate(failedDelegates)
+      if (!next) return false
+      console.warn(`[acc-db chat] helper ${delegate.id} failed, switching to ${next.id}`)
+      delegate = next
+      cloud = next.cloud
+      runModel = next.model
+      limits = next.cloud.limits
+      delegateText = ''
+      line({ type: 'status', text: `Přepínám na pomocníka ${next.label}…` })
+      return true
+    }
     if (cloud && !delegate) {
       let wait = limits.blockedFor(choice.model)
       if (wait > 0 && wait <= 5) {
@@ -892,7 +912,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     let anyText = false
     let actions = 0
     const done = new Set<string>()
-    let delegateTokens = 0
+    const usageBy = new Map<string, { label: string; tokens: number }>()
     let delegateText = '' // the helper only gathers facts; the local model writes the answer from them
     const onText = (t: string) => {
       if (delegate) {
@@ -916,7 +936,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         try {
           return await round1(defs, forceText)
         } catch (err) {
-          if (!(isGroq && err instanceof UpstreamError && err.status === 429 && err.retryAfter && err.retryAfter <= SHORT_WAIT_S && attempt < 2)) throw err
+          if (!(isGroq && err instanceof UpstreamError && err.status === 429 && err.retryAfter && err.retryAfter <= SHORT_WAIT_S && attempt < 2 && !(delegate && pickDelegate(new Set([...failedDelegates, delegate.id]))))) throw err
           line({ type: 'status', text: `Čekám na limit GroqCloud (${err.retryAfter} s)…` })
           await sleep(err.retryAfter * 1000 + 300)
         }
@@ -940,7 +960,12 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         first = undefined
       }
       try {
-        return cloud ? await cloudRound(cloud, runModel, convo, defs, forceText, rc.signal, onText, onFirst, (n) => (delegateTokens += n)) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
+        return cloud ? await cloudRound(cloud, runModel, convo, defs, forceText, rc.signal, onText, onFirst, (n) => {
+          if (!delegate) return
+          const u = usageBy.get(delegate.id) ?? { label: delegate.label, tokens: 0 }
+          u.tokens += n
+          usageBy.set(delegate.id, u)
+        }) : await ollamaRound(convo, forceText ? [] : defs, rc.signal, onText, onFirst)
       } finally {
         onFirst()
         ctrl.signal.removeEventListener('abort', abort)
@@ -957,6 +982,10 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
         try {
           r = await round(defs, last && defs.length > 0)
         } catch (err) {
+          if (delegate && err instanceof UpstreamError && err.status !== 422 && !ctrl.signal.aborted && switchDelegate()) {
+            i--
+            continue
+          }
           // the model produced a malformed tool call → retry this round once without tools
           if (err instanceof UpstreamError && err.status === 422 && defs.length) {
             console.warn(`[acc-db chat] ${choice.id}: tool call failed, retrying without tools`)
@@ -1030,7 +1059,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
       const refs = await linkRefs(fullText)
       if (refs) line({ type: 'refs', ...refs })
       sendLimits()
-      if (delegate && delegateTokens) line({ type: 'usage', delegates: [{ id: delegate.id, label: delegate.label, tokens: delegateTokens }] })
+      if (usageBy.size) line({ type: 'usage', delegates: [...usageBy].map(([id, u]) => ({ id, label: u.label, tokens: u.tokens })) })
       line({ message: { role: 'assistant', content: '' }, done: true, model: choice.id, ...(delegate ? { via: delegate.id } : {}) })
       if (!res.destroyed) res.end()
     } catch (err) {
