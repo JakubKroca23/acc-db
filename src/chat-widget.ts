@@ -1,8 +1,11 @@
 /**
- * Floating AI assistant („AI Pomocník“) — bottom-right button + chat panel.
+ * Floating AI assistant „Kapitán Karel“ (mascot: pirate robot) — bottom-right button + chat panel.
  * Talks to POST /acc-db/api/chat, which streams Ollama's NDJSON (`{"message":{"content":"…"}}` per line).
  * All text is rendered via textContent (never innerHTML) → model output cannot inject markup.
  */
+
+import karelHead from './assets/kapitan-karel-head.png'
+import karelFull from './assets/kapitan-karel.png'
 
 type Role = 'user' | 'assistant'
 type Msg = { role: Role; content: string; error?: boolean }
@@ -12,6 +15,18 @@ const HISTORY_KEY = 'acc-db-chat-v1'
 const MAX_SEND = 20
 const MAX_LEN = 4000
 const GENERIC_ERROR = 'Došlo k chybě při komunikaci se serverem.'
+const NAME = 'Kapitán Karel'
+
+/** Mascot on a white disc (black ink on transparent PNG → readable on any background). */
+function avatar(cls: string, src = karelHead) {
+  const wrap = el('span', `karel-avatar ${cls}`)
+  const img = el('img')
+  img.src = src
+  img.alt = ''
+  img.decoding = 'async'
+  wrap.append(img)
+  return wrap
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag)
@@ -43,18 +58,21 @@ export function mountChatWidget(apiFetch: ApiFetch) {
   fab.type = 'button'
   fab.setAttribute('aria-controls', 'chat-panel')
   fab.setAttribute('aria-expanded', 'false')
-  fab.append(el('span', 'chat-fab-icon', '💬'), el('span', 'chat-fab-label', 'Asistent'))
-  fab.title = 'AI Pomocník — zeptejte se na cokoli k aplikaci'
+  fab.append(avatar('chat-fab-avatar'), el('span', 'chat-fab-label', NAME))
+  fab.title = `${NAME} — AI asistent katalogu. Zeptejte se na cokoli k aplikaci.`
+  fab.setAttribute('aria-label', `${NAME} — otevřít AI asistenta`)
 
   const panel = el('section', 'chat-panel')
   panel.id = 'chat-panel'
   panel.hidden = true
   panel.setAttribute('role', 'dialog')
-  panel.setAttribute('aria-label', 'AI Pomocník')
+  panel.setAttribute('aria-label', `${NAME} — AI asistent`)
 
   const head = el('header', 'chat-head')
   const titleWrap = el('div', 'chat-title-wrap')
-  titleWrap.append(el('span', 'chat-dot'), el('h2', 'chat-title', 'AI Pomocník'))
+  const titleText = el('div', 'chat-title-text')
+  titleText.append(el('h2', 'chat-title', NAME), el('span', 'chat-subtitle', 'AI asistent katalogu'))
+  titleWrap.append(avatar('chat-head-avatar'), titleText)
   const headActions = el('div', 'chat-head-actions')
   const resetBtn = el('button', 'chat-icon-btn chat-reset', 'Nová konverzace')
   resetBtn.type = 'button'
@@ -105,6 +123,7 @@ export function mountChatWidget(apiFetch: ApiFetch) {
   function bubble(m: Msg) {
     const row = el('div', `chat-row ${m.role === 'user' ? 'from-user' : 'from-assistant'}`)
     const b = el('div', `chat-bubble${m.error ? ' is-error' : ''}`, m.content)
+    if (m.role === 'assistant') row.append(avatar('chat-msg-avatar'))
     row.append(b)
     return { row, b }
   }
@@ -112,7 +131,12 @@ export function mountChatWidget(apiFetch: ApiFetch) {
   function renderLog() {
     log.replaceChildren()
     if (!messages.length) {
-      log.append(el('p', 'chat-empty', 'S čím v aplikaci potřebujete pomoct?'))
+      const empty = el('div', 'chat-empty')
+      const img = el('img', 'chat-empty-mascot')
+      img.src = karelFull
+      img.alt = NAME
+      empty.append(img, el('p', 'chat-empty-hello', `Ahoj, jsem ${NAME}.`), el('p', 'chat-empty-ask', 'S čím v katalogu potřebujete pomoct?'))
+      log.append(empty)
     } else {
       for (const m of messages) log.append(bubble(m).row)
     }
@@ -140,7 +164,7 @@ export function mountChatWidget(apiFetch: ApiFetch) {
       const res = await apiFetch('/chat/status')
       if (!res.ok) return
       const s = (await res.json()) as { available?: boolean; error?: string | null }
-      showNotice(s.available ? null : s.error || 'AI asistent zatím není dostupný.')
+      showNotice(s.available ? null : s.error || `${NAME} zatím není dostupný.`)
     } catch {
       /* the send itself reports errors */
     }
@@ -173,11 +197,9 @@ export function mountChatWidget(apiFetch: ApiFetch) {
     messages.push(answer)
     setLoading(true)
     renderLog()
-    const { b } = bubble(answer)
-    const lastRow = log.lastElementChild as HTMLElement
-    lastRow.replaceChildren(b)
+    const b = log.querySelector<HTMLElement>('.chat-row:last-child .chat-bubble')!
     b.classList.add('is-typing')
-    b.setAttribute('aria-label', 'Asistent píše…')
+    b.setAttribute('aria-label', `${NAME} píše…`)
 
     const fail = (msg: string) => {
       answer.error = true

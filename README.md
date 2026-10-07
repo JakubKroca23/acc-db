@@ -46,7 +46,7 @@ Aplikace je dostupná jen uživatelům přihlášeným v Contsystem Manageru (`c
 | GET/HEAD | `/api/img?url=` | proxy + cache náhledů (jen https z ALSAP / Trans-Technik / Hydrotruck, pouze rastrové obrázky, max 6 MB; `.jpg` 404 → zkusí `.webp`) |
 | POST | `/api/catalog/update` | spustí scrape+seed (volitelně `X-Update-Token`) |
 | GET | `/api/catalog/update/status` | stav jobu |
-| POST | `/api/chat` | AI asistent: `{ messages: [{ role: 'user'|'assistant', content }] }` → NDJSON stream z Ollamy |
+| POST | `/api/chat` | AI asistent Kapitán Karel: `{ messages: [{ role: 'user'|'assistant', content }] }` → NDJSON stream z Ollamy |
 | GET | `/api/chat/status` | je Ollama dostupná a má model? |
 
 Token: `ACC_DB_UPDATE_TOKEN` v `.env`. Pokud není nastaven, update je povolen (vhodné jen pro privátní deploy).
@@ -85,12 +85,12 @@ docker compose up -d --build
 
 Image obsahuje Python 3 kvůli aktualizaci katalogu z UI.
 
-## AI asistent (Ollama)
+## AI asistent „Kapitán Karel“ (Ollama)
 
-Plovoucí tlačítko „💬 Asistent“ vpravo dole otevře panel „AI Pomocník“ (`src/chat-widget.ts`). Server (`src/server/chat.ts`) přeposílá konverzaci na Ollamu (`/api/chat`, `stream: true`) a NDJSON stream posílá rovnou do prohlížeče; je za stejnou auth gate jako zbytek aplikace.
+Plovoucí tlačítko s maskotem „Kapitán Karel“ (pirátský robot, `src/assets/kapitan-karel*.png`) vpravo dole otevře chatovací panel (`src/chat-widget.ts`). Server (`src/server/chat.ts`) přeposílá konverzaci na Ollamu (`/api/chat`, `stream: true`) a NDJSON stream posílá rovnou do prohlížeče; je za stejnou auth gate jako zbytek aplikace.
 
 - Env: `OLLAMA_URL` (výchozí `http://ollama:11434`), `OLLAMA_MODEL` (výchozí `qwen2.5:3b`), `OLLAMA_TIMEOUT_MS` (výchozí 120000).
-- Limity: max. 20 posledních zpráv, 4000 znaků na zprávu, ~16 000 znaků celkem. Chyby česky; Ollama nedostupná → 503 „AI asistent zatím není dostupný (Ollama na serveru neběží).“
+- Limity: max. 20 posledních zpráv, 4000 znaků na zprávu, ~16 000 znaků celkem. Chyby česky; Ollama nedostupná → 503 „Kapitán Karel zatím není dostupný (Ollama na serveru neběží).“
 - Na VPS běží Ollama jako kontejner `ollama` (port jen `127.0.0.1:11434`, není veřejný). acc-db na ni vidí přes sdílenou docker síť `ollama` (v `docker-compose.yml` jako external):
   ```bash
   docker network create ollama            # jednou

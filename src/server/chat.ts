@@ -19,13 +19,14 @@ const MAX_BODY_BYTES = 256 * 1024
 const FIRST_BYTE_TIMEOUT_MS = 45_000 // model load / prompt evaluation on CPU
 const STATUS_TIMEOUT_MS = 3_000
 
-export const MSG_UNAVAILABLE = 'AI asistent zatím není dostupný (Ollama na serveru neběží).'
+export const MSG_UNAVAILABLE = 'Kapitán Karel zatím není dostupný (Ollama na serveru neběží).'
 
 /** Base = the user's original prompt; the rest tells the model where it lives. */
 export const SYSTEM_PROMPT = [
   'Jsi užitečný asistent integrovaný přímo v aplikaci. Pomáhej uživateli s navigací a dotazy. Odpovídej věcně, stručně a česky.',
   '',
-  'Jsi asistent interní aplikace „Katalog příslušenství“ firmy Contsystem (výrobce nástaveb na nákladní vozidla, např. hákových nosičů kontejnerů).',
+  'Jmenuješ se Kapitán Karel — jsi AI asistent (maskot: pirátský robot) interní aplikace „Katalog příslušenství“ firmy Contsystem (výrobce nástaveb na nákladní vozidla, např. hákových nosičů kontejnerů).',
+  'Když se uživatel zeptá, kdo jsi, představ se jako Kapitán Karel, AI asistent katalogu. Nepiš pirátským slangem a nehraj roli piráta; nanejvýš výjimečně lehký náznak (např. v pozdravu). Uživateli vykej.',
   'Katalog obsahuje příslušenství k nákladním vozidlům a nástavbám od dodavatelů ALSAP, Trans-Technik a Hydrotruck; u produktů jsou ceny bez DPH i s DPH.',
   'Jak aplikace funguje:',
   '- Vlevo je navigace kategorií (na mobilu vodorovný pruh nahoře). Položka „Vše“ zobrazí celý katalog.',
@@ -119,7 +120,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
       sendJson(res, 200, {
         available: hasModel,
         model,
-        error: hasModel ? null : `AI asistent zatím není dostupný (model ${model} na serveru chybí).`,
+        error: hasModel ? null : `Kapitán Karel zatím není dostupný (model ${model} na serveru chybí).`,
       })
     } catch {
       sendJson(res, 200, { available: false, model, error: MSG_UNAVAILABLE })
@@ -182,7 +183,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
         if (res.destroyed) return
         console.warn('[acc-db chat] Ollama unreachable:', err instanceof Error ? (err.cause as Error)?.message || err.message : err)
         return sendJson(res, timedOut ? 504 : 503, {
-          error: timedOut ? 'AI asistent neodpověděl včas. Zkuste to prosím znovu.' : MSG_UNAVAILABLE,
+          error: timedOut ? 'Kapitán Karel neodpověděl včas. Zkuste to prosím znovu.' : MSG_UNAVAILABLE,
         })
       }
 
@@ -191,9 +192,9 @@ export function createChatHandler(env: Record<string, string | undefined>) {
         console.warn(`[acc-db chat] Ollama HTTP ${upstream.status}: ${text.slice(0, 200)}`)
         clearFirst()
         if (upstream.status === 404) {
-          return sendJson(res, 503, { error: `AI asistent zatím není dostupný (model ${model} na serveru chybí).` })
+          return sendJson(res, 503, { error: `Kapitán Karel zatím není dostupný (model ${model} na serveru chybí).` })
         }
-        return sendJson(res, 502, { error: 'AI asistent vrátil chybu. Zkuste to prosím znovu.' })
+        return sendJson(res, 502, { error: 'Kapitán Karel narazil na chybu. Zkuste to prosím znovu.' })
       }
 
       res.statusCode = 200
@@ -218,7 +219,7 @@ export function createChatHandler(env: Record<string, string | undefined>) {
           res.write(
             '\n' +
               JSON.stringify({
-                error: timedOut ? 'Odpověď trvala příliš dlouho a byla přerušena.' : 'Spojení s AI asistentem bylo přerušeno.',
+                error: timedOut ? 'Odpověď trvala příliš dlouho a byla přerušena.' : 'Spojení s Kapitánem Karlem bylo přerušeno.',
                 done: true,
               }) +
               '\n',
