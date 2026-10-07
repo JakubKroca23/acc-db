@@ -20,6 +20,9 @@ services:
       - ACC_DB_ALLOWED_ROLES=${ACC_DB_ALLOWED_ROLES:-dev}
       - MANAGER_APPWRITE_ENDPOINT=${MANAGER_APPWRITE_ENDPOINT:-https://appwrite.propoj.app/v1}
       - MANAGER_APPWRITE_PROJECT_ID=${MANAGER_APPWRITE_PROJECT_ID:-contsystem}
+      # AI asistent: Ollama v kontejneru `ollama` na sdílené docker síti `ollama` (port není veřejný)
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.acc-db.rule=Host(`zakazky.contsystem.cz`) && PathPrefix(`/acc-db`)"
@@ -32,7 +35,11 @@ services:
       - "traefik.docker.network=appwrite"
     networks:
       - appwrite
+      - ollama
 
 networks:
   appwrite:
+    external: true
+  # `docker network create ollama && docker network connect ollama ollama` (viz README → AI asistent)
+  ollama:
     external: true

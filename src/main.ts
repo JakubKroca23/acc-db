@@ -1,6 +1,7 @@
 import './style.css'
 import type { AccessoryType, CartMap, CatalogUpdateStatus, PriceHistoryEntry, Product, RelatedGroup } from './types'
 import { estimateShippingBySupplier, type ShippingEstimate } from './shipping'
+import { mountChatWidget } from './chat-widget'
 
 const STORAGE_KEY = 'acc-db-cart-v2'
 const NOTE_KEY = 'acc-db-quote-note'
@@ -1299,3 +1300,4 @@ document.addEventListener('keydown', (e) => {
 
 render()
 void loadBootstrap()
+mountChatWidget(apiFetch)

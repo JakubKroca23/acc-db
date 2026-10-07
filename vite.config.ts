@@ -11,6 +11,7 @@ function apiPlugin(env: Record<string, string>): Plugin {
   } else {
     console.log('[acc-db auth] gate OFF (set ACC_DB_AUTH=manager to require the Manager login)')
   }
+  console.log(`[acc-db chat] Ollama ${env.OLLAMA_URL || 'http://ollama:11434'} · model ${env.OLLAMA_MODEL || 'qwen2.5:3b'}`)
   return {
     name: 'acc-db-api',
     configureServer(server) {

@@ -8,6 +8,7 @@ import { Client, TablesDB, Query } from 'node-appwrite'
 import { SHIPPING_RATES, SHIPPING_AVG } from '../shipping.ts'
 import { getCatalogUpdateStatus, startCatalogUpdate } from './catalog-update.ts'
 import { handleImageProxy } from './image-proxy.ts'
+import { createChatHandler } from './chat.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -41,6 +42,7 @@ type GateLike = {
 export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
   const databaseId = env.APPWRITE_DATABASE_ID || 'acc-db'
   const updateToken = env.ACC_DB_UPDATE_TOKEN || ''
+  const assistant = createChatHandler(env)
 
   function client() {
     return new Client()
@@ -417,6 +419,17 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         return
       }
 
+      // AI assistant (Ollama) — behind the auth gate like everything under /acc-db
+      if (method === 'POST' && pathOnly === '/api/chat') {
+        await assistant.chat(req, res)
+        return
+      }
+
+      if (method === 'GET' && pathOnly === '/api/chat/status') {
+        await assistant.status(res)
+        return
+      }
+
       if (method !== 'GET') {
         json(res, 405, { error: 'Method Not Allowed' })
         return
@@ -425,6 +438,10 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       next()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error'
+      if (res.headersSent) {
+        res.end()
+        return
+      }
       json(res, 500, { error: message })
     }
   }
