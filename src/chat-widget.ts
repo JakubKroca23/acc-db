@@ -126,6 +126,8 @@ export function setRichText(target: HTMLElement, text: string, refs?: Refs) {
 let historyKey = HISTORY_KEY
 
 export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
+  // Katalog příslušenství Kapitána neukazuje.
+  return
   if (host.userId) {
     historyKey = `${HISTORY_KEY}:${host.userId}`
     try {
@@ -149,7 +151,7 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     } catch {
       return []
     }
-  }()
+  })()
   let loading = false
 
   const root = el('div', 'chat-widget no-print')

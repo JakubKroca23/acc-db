@@ -23,7 +23,7 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 }
 
 /** Logged-in Manager user (when the server-side gate is on). */
-let me: { id?: string; name: string; email: string } | null = null
+let me: { id?: string; name: string; email: string; labels?: string[] } | null = null
 
 /** Quote, note and chat are stored per Manager user: `<key>:<userId>` (unkeyed only when the auth gate is off). */
 let userId = ''
@@ -46,7 +46,10 @@ async function loadMe() {
   try {
     const res = await apiFetch('/me')
     if (!res.ok) return
-    const data = (await res.json()) as { user?: { name: string; email: string } | null; managerUrl?: string }
+    const data = (await res.json()) as {
+      user?: { id?: string; name: string; email: string; labels?: string[] } | null
+      managerUrl?: string
+    }
     me = data.user || null
     if (me?.id) {
       userId = me.id
@@ -169,6 +172,11 @@ let searchTimer: number | undefined
 let updateStatus: CatalogUpdateStatus | null = null
 let updatePolling: number | undefined
 let toastMsg = ''
+let catalogInfoOpen = false
+
+function isCatalogDev(): boolean {
+  return (me?.labels ?? []).some((label) => label.toLowerCase() === 'dev')
+}
 
 type DbStats = {
   types: number
@@ -954,8 +962,7 @@ app.innerHTML = `
     <div class="body-row">
       <aside class="sidebar">
         <nav class="nav" aria-label="Kategorie" data-region="nav"></nav>
-        <div class="sidebar-foot">
-          <button type="button" class="btn btn-sidebar block" data-action="update-catalog">Aktualizovat katalog</button>
+        <div class="sidebar-foot" data-region="sidebar-foot" hidden>
           <div class="status tiny" data-region="status"></div>
         </div>
       </aside>
@@ -990,7 +997,24 @@ function renderHeaderActions() {
   const title = n
     ? `Cenová nabídka: ${n} ${itemsWord(n)} (${pieces} ks) · celkem ${formatCzkExact(totalEx)} bez DPH / ${formatCzkExact(totalVat)} s DPH (vč. dopravy)`
     : 'Cenová nabídka je zatím prázdná'
+  const devActions = isCatalogDev()
+    ? `<div class="catalog-dev-actions">
+        <div class="catalog-info">
+          <button type="button" class="btn btn-sidebar" data-action="toggle-catalog-info" aria-expanded="${catalogInfoOpen ? 'true' : 'false'}" aria-controls="catalog-info-panel">Údaje o katalogu</button>
+          ${
+            catalogInfoOpen
+              ? `<div class="catalog-info-panel" id="catalog-info-panel" role="dialog" aria-label="Údaje o katalogu">
+                  <p class="catalog-info-summary">${escapeHtml(statusText || 'Katalog se načítá…')}</p>
+                  ${updateStatusHtml()}
+                </div>`
+              : ''
+          }
+        </div>
+        <button type="button" class="btn btn-sidebar" data-action="update-catalog">Aktualizovat katalog</button>
+      </div>`
+    : ''
   region('header-actions').innerHTML = `
+    ${devActions}
     <button type="button" class="quote-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" ${viewMode === 'quote' ? 'aria-current="page"' : ''}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z M14 3v5h5 M9 13h6 M9 17h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="quote-btn-label">Cenová nabídka</span>
@@ -1014,12 +1038,14 @@ function renderNav() {
     }
   }
   const st = region('status')
-  st.textContent = statusText
+  const foot = region('sidebar-foot')
+  st.textContent = statusError ? statusText : ''
   st.classList.toggle('error', statusError)
+  foot.hidden = !statusError
 }
 
 function renderNotices() {
-  region('notices').innerHTML = `${updateStatusHtml()}${toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''}`
+  region('notices').innerHTML = toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''
 }
 
 function renderMain() {
@@ -1188,6 +1214,10 @@ function backToCatalog() {
 // ── events (delegated once; regions re-render freely) ─────────────
 app.addEventListener('click', (e) => {
   const target = e.target as HTMLElement
+  if (catalogInfoOpen && !target.closest('.catalog-info')) {
+    catalogInfoOpen = false
+    renderHeaderActions()
+  }
   const typeBtn = target.closest<HTMLElement>('[data-type]')
   if (typeBtn) {
     selectType(typeBtn.dataset.type!)
@@ -1238,7 +1268,13 @@ app.addEventListener('click', (e) => {
       printQuote()
       break
     case 'update-catalog':
+      if (!isCatalogDev()) break
       void triggerUpdate()
+      break
+    case 'toggle-catalog-info':
+      if (!isCatalogDev()) break
+      catalogInfoOpen = !catalogInfoOpen
+      renderHeaderActions()
       break
     case 'more':
       appendMore()
