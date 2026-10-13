@@ -1079,6 +1079,51 @@ function renderNotices() {
   region('notices').innerHTML = banner + toast
 }
 
+const PICK_CHANNEL = 'acc-db-accessory-pick'
+
+/** Popup (window.opener) nebo katalog vložený v aplikaci (window.parent). */
+function pickHost(): Window | null {
+  try {
+    if (window.opener && !window.opener.closed) return window.opener
+  } catch {
+    /* cross-origin opener */
+  }
+  try {
+    if (window.parent && window.parent !== window) return window.parent
+  } catch {
+    /* cross-origin parent */
+  }
+  return null
+}
+
+function emitPickMessage(payload: { type: string; token: string; item?: unknown }) {
+  const host = pickHost()
+  if (host) {
+    try {
+      host.postMessage(payload, window.location.origin)
+      return true
+    } catch {
+      /* fall through to BroadcastChannel */
+    }
+  }
+  try {
+    const ch = new BroadcastChannel(PICK_CHANNEL)
+    ch.postMessage(payload)
+    ch.close()
+    return true
+  } catch {
+    return false
+  }
+}
+
+function closePickWindow() {
+  try {
+    if (window.opener && !window.opener.closed) window.close()
+  } catch {
+    /* ignore */
+  }
+}
+
 function postPick(product: Product) {
   const item = {
     $id: product.id,
@@ -1092,14 +1137,17 @@ function postPick(product: Product) {
     currency: 'CZK',
     category: typeName(product.typeSlug) || null,
   }
-  const payload = { type: 'acc-db-pick', token: pickToken, item }
-  if (window.opener && !window.opener.closed) {
-    window.opener.postMessage(payload, window.location.origin)
-    window.close()
+  if (!emitPickMessage({ type: 'acc-db-pick', token: pickToken, item })) {
+    toastMsg = 'Tohle okno nebylo otevřené z příslušenství zakázky.'
+    renderNotices()
     return
   }
-  toastMsg = 'Tohle okno nebylo otevřené z příslušenství zakázky.'
-  renderNotices()
+  closePickWindow()
+}
+
+function cancelPick() {
+  emitPickMessage({ type: 'acc-db-pick-cancel', token: pickToken })
+  closePickWindow()
 }
 
 function renderMain() {
@@ -1329,7 +1377,7 @@ app.addEventListener('click', (e) => {
       printQuote()
       break
     case 'cancel-pick':
-      window.close()
+      cancelPick()
       break
     case 'update-catalog':
       if (!isCatalogDev()) break
