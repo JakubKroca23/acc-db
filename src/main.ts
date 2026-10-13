@@ -2,6 +2,14 @@ import './style.css'
 import type { AccessoryType, CartMap, CatalogUpdateStatus, PriceHistoryEntry, Product, RelatedGroup } from './types'
 import { estimateShippingBySupplier, type ShippingEstimate } from './shipping'
 import { mountChatWidget, type ChatAction } from './chat-widget'
+import {
+  findKitGaps,
+  formatKitTipMessage,
+  loadDismissedKitTips,
+  saveDismissedKitTips,
+  tipForAddedProduct,
+  type KitTipGap,
+} from './kit-tips'
 
 const STORAGE_KEY = 'acc-db-cart-v2'
 const NOTE_KEY = 'acc-db-quote-note'
@@ -204,6 +212,88 @@ let updateSelectedSuppliers: string[] = [...UPDATE_SUPPLIER_OPTIONS]
 let updatePolling: number | undefined
 let toastMsg = ''
 let catalogInfoOpen = false
+let catalogDevMenuOpen = false
+let dismissedKitTips = loadDismissedKitTips()
+let activeKitTip: KitTipGap | null = null
+let kitTipHideTimer: number | undefined
+
+function cartTypeSlugs(): Set<string> {
+  const slugs = new Set<string>()
+  for (const [id, qty] of Object.entries(cart)) {
+    if (!qty) continue
+    const p = productsById.get(id)
+    if (p?.typeSlug) slugs.add(p.typeSlug)
+  }
+  return slugs
+}
+
+function dismissKitMissing(slugs: string[]) {
+  for (const s of slugs) dismissedKitTips.add(s)
+  saveDismissedKitTips(dismissedKitTips)
+}
+
+function showKitTip(gap: KitTipGap | null) {
+  activeKitTip = gap
+  if (kitTipHideTimer) window.clearTimeout(kitTipHideTimer)
+  kitTipHideTimer = undefined
+  if (gap) {
+    kitTipHideTimer = window.setTimeout(() => {
+      activeKitTip = null
+      renderNotices()
+    }, 14000)
+  }
+  renderNotices()
+}
+
+function maybeTipAfterAdd(product: Product) {
+  const gap = tipForAddedProduct(types, groups, cartTypeSlugs(), product.typeSlug, dismissedKitTips)
+  if (gap) showKitTip(gap)
+}
+
+function kitTipBubbleHtml(): string {
+  if (!activeKitTip) return ''
+  const gap = activeKitTip
+  const openBtns = gap.missing
+    .map(
+      (m) =>
+        `<button type="button" class="btn btn-primary" data-action="kit-tip-open" data-slug="${escapeAttr(m.slug)}">${escapeHtml(m.name)}</button>`,
+    )
+    .join('')
+  return `
+    <aside class="kit-tip-bubble no-print" role="status" aria-label="Tip Kapitána Karla">
+      <div class="kit-tip-head">
+        <span class="kit-tip-name">Kapitán Karel</span>
+        <button type="button" class="kit-tip-close" data-action="kit-tip-dismiss" aria-label="Zavřít tip">✕</button>
+      </div>
+      <p class="kit-tip-msg">${escapeHtml(formatKitTipMessage(gap))}</p>
+      <div class="kit-tip-actions">
+        ${openBtns}
+        <button type="button" class="btn btn-outline" data-action="kit-tip-dismiss">Zavřít</button>
+      </div>
+    </aside>`
+}
+
+function quoteKitTipsHtml(): string {
+  const gaps = findKitGaps(types, groups, cartTypeSlugs(), dismissedKitTips)
+  if (!gaps.length) return ''
+  const items = gaps
+    .flatMap((g) =>
+      g.missing.map(
+        (m) =>
+          `<li>
+            <span>K <strong>${escapeHtml(g.triggerName)}</strong> chybí <strong>${escapeHtml(m.name)}</strong></span>
+            <button type="button" class="btn btn-outline" data-action="kit-tip-open" data-slug="${escapeAttr(m.slug)}">Otevřít</button>
+            <button type="button" class="link-btn" data-action="kit-tip-dismiss-slug" data-slug="${escapeAttr(m.slug)}">Ignorovat</button>
+          </li>`,
+      ),
+    )
+    .join('')
+  return `
+    <aside class="kit-tip-banner no-print" aria-label="Tipy Kapitána Karla k nabídce">
+      <div class="kit-tip-banner-title">Kapitán Karel radí</div>
+      <ul class="kit-tip-banner-list">${items}</ul>
+    </aside>`
+}
 
 function isCatalogDev(): boolean {
   return (me?.labels ?? []).some((label) => label.toLowerCase() === 'dev')
@@ -423,11 +513,14 @@ function setQty(productId: string, value: number) {
 function addOne(product: Product) {
   productsById.set(product.id, product)
   setQty(product.id, (cart[product.id] || 0) + 1)
-  toastMsg = `Přidáno do nabídky: ${product.name.slice(0, 48)}`
-  window.setTimeout(() => {
-    toastMsg = ''
-    render()
-  }, 1800)
+  maybeTipAfterAdd(product)
+  if (!activeKitTip) {
+    toastMsg = `Přidáno do nabídky: ${product.name.slice(0, 48)}`
+    window.setTimeout(() => {
+      toastMsg = ''
+      render()
+    }, 1800)
+  }
 }
 
 function clearAll() {
@@ -1377,6 +1470,7 @@ function quotePanelHtml(): string {
         </div>
       </header>
       <p class="quote-disclaimer">Ceny jsou orientační z veřejných katalogů dodavatelů — nejde o závazný ceník. Před předáním zkontrolujte množství a položky.</p>
+      ${quoteKitTipsHtml()}
       <label class="quote-note no-print">
         <span>Poznámka k nabídce</span>
         <textarea data-quote-note rows="2" placeholder="např. zakázka XY, termín, specifikace nástavby…">${escapeHtml(quoteNote)}</textarea>
@@ -1485,18 +1579,25 @@ function renderHeaderActions() {
     : 'Cenová nabídka je zatím prázdná'
   const devActions = isCatalogDev()
     ? `<div class="catalog-dev-actions">
-        <div class="catalog-info">
-          <button type="button" class="btn btn-sidebar" data-action="toggle-catalog-info" aria-expanded="${catalogInfoOpen ? 'true' : 'false'}" aria-controls="catalog-info-panel">Údaje o katalogu</button>
-          ${
-            catalogInfoOpen
-              ? `<div class="catalog-info-panel" id="catalog-info-panel" role="dialog" aria-label="Údaje o katalogu">
-                  <p class="catalog-info-summary">${escapeHtml(statusText || 'Katalog se načítá…')}</p>
-                  ${updateStatusHtml()}
-                </div>`
-              : ''
-          }
-        </div>
-        <button type="button" class="btn btn-sidebar" data-action="update-catalog">Aktualizovat katalog</button>
+        <button type="button" class="catalog-dev-gear" data-action="toggle-catalog-dev-menu" aria-expanded="${catalogDevMenuOpen ? 'true' : 'false'}" aria-controls="catalog-dev-menu" aria-label="Nastavení katalogu (dev)" title="Nastavení katalogu">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M19.4 13a7.8 7.8 0 0 0 .05-2l2.05-1.6-2-3.46-2.45.98a7.9 7.9 0 0 0-1.73-1L15 2h-6l-.32 2.92a7.9 7.9 0 0 0-1.73 1L4.5 4.94l-2 3.46L4.55 11a7.8 7.8 0 0 0 0 2l-2.05 1.6 2 3.46 2.45-.98a7.9 7.9 0 0 0 1.73 1L9 22h6l.32-2.92a7.9 7.9 0 0 0 1.73-1l2.45.98 2-3.46L19.4 13Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        </button>
+        ${
+          catalogDevMenuOpen
+            ? `<div class="catalog-dev-menu" id="catalog-dev-menu" role="menu" aria-label="Nastavení katalogu">
+                <button type="button" class="btn btn-outline" data-action="toggle-catalog-info" aria-expanded="${catalogInfoOpen ? 'true' : 'false'}" aria-controls="catalog-info-panel">Údaje o katalogu</button>
+                <button type="button" class="btn btn-outline" data-action="update-catalog">Aktualizovat katalog</button>
+                ${
+                  catalogInfoOpen
+                    ? `<div class="catalog-info-panel" id="catalog-info-panel" role="dialog" aria-label="Údaje o katalogu">
+                        <p class="catalog-info-summary">${escapeHtml(statusText || 'Katalog se načítá…')}</p>
+                        ${updateStatusHtml()}
+                      </div>`
+                    : ''
+                }
+              </div>`
+            : ''
+        }
       </div>`
     : ''
   region('header-actions').innerHTML = `
@@ -1537,7 +1638,7 @@ function renderNotices() {
       </div>`
     : ''
   const toast = toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''
-  region('notices').innerHTML = banner + toast
+  region('notices').innerHTML = banner + toast + kitTipBubbleHtml()
 }
 
 const PICK_CHANNEL = 'acc-db-accessory-pick'
@@ -1816,7 +1917,8 @@ function backToCatalog() {
 // ── events (delegated once; regions re-render freely) ─────────────
 app.addEventListener('click', (e) => {
   const target = e.target as HTMLElement
-  if (catalogInfoOpen && !target.closest('.catalog-info')) {
+  if ((catalogDevMenuOpen || catalogInfoOpen) && !target.closest('.catalog-dev-actions')) {
+    catalogDevMenuOpen = false
     catalogInfoOpen = false
     renderHeaderActions()
   }
@@ -1913,6 +2015,36 @@ app.addEventListener('click', (e) => {
     case 'clear-filters':
       clearCatalogFilters()
       break
+    case 'kit-tip-dismiss':
+      if (activeKitTip) dismissKitMissing(activeKitTip.missing.map((m) => m.slug))
+      showKitTip(null)
+      if (viewMode === 'quote') renderMain()
+      break
+    case 'kit-tip-dismiss-slug': {
+      const slug = actionEl.dataset.slug
+      if (slug) {
+        dismissKitMissing([slug])
+        if (activeKitTip) {
+          activeKitTip = {
+            ...activeKitTip,
+            missing: activeKitTip.missing.filter((m) => m.slug !== slug),
+          }
+          if (!activeKitTip.missing.length) showKitTip(null)
+          else renderNotices()
+        }
+        if (viewMode === 'quote') renderMain()
+      }
+      break
+    }
+    case 'kit-tip-open': {
+      const slug = actionEl.dataset.slug
+      if (slug) {
+        showKitTip(null)
+        toCatalogView()
+        selectType(slug)
+      }
+      break
+    }
     case 'update-catalog':
       if (!isCatalogDev()) break
       openUpdateConfirm()
@@ -1956,9 +2088,16 @@ app.addEventListener('click', (e) => {
         renderUpdateModal()
       }
       break
+    case 'toggle-catalog-dev-menu':
+      if (!isCatalogDev()) break
+      catalogDevMenuOpen = !catalogDevMenuOpen
+      if (!catalogDevMenuOpen) catalogInfoOpen = false
+      renderHeaderActions()
+      break
     case 'toggle-catalog-info':
       if (!isCatalogDev()) break
       catalogInfoOpen = !catalogInfoOpen
+      catalogDevMenuOpen = true
       renderHeaderActions()
       break
     case 'more':
@@ -2238,7 +2377,9 @@ function applyChatAction(a: ChatAction): { undo?: () => void } | void {
       const p = product()
       if (!p) return
       const prev = cart[p.id] || 0
-      setQty(p.id, Number(args.mnozstvi) || 0)
+      const next = Number(args.mnozstvi) || 0
+      setQty(p.id, next)
+      if (a.name === 'pridat_do_nabidky' || (next > 0 && prev === 0)) maybeTipAfterAdd(p)
       return { undo: () => setQty(p.id, prev) }
     }
     case 'otevrit_nabidku':

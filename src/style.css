@@ -219,26 +219,65 @@ h3 {
 }
 
 .catalog-dev-actions {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
 }
 
-.catalog-info {
-  position: relative;
+.catalog-dev-gear {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  transition: background-color 150ms, border-color 150ms;
 }
 
-.catalog-info-panel {
+.catalog-dev-gear:hover,
+.catalog-dev-gear[aria-expanded='true'] {
+  background: rgba(37, 99, 235, 0.28);
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+.catalog-dev-gear svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.catalog-dev-menu {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
   z-index: 40;
-  width: min(360px, 80vw);
-  padding: 12px;
+  width: min(280px, 80vw);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   border-radius: var(--radius-lg);
   background: #fff;
   color: var(--foreground);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+}
+
+.catalog-dev-menu .btn {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.catalog-info-panel {
+  margin-top: 2px;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  background: var(--muted);
+  color: var(--foreground);
   font-size: 13px;
   font-weight: 500;
   line-height: 1.4;
@@ -874,9 +913,9 @@ textarea:focus {
 
 .product-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  gap: 14px;
-  margin-top: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
 }
 
 .product-card {
@@ -885,9 +924,8 @@ textarea:focus {
   border-radius: 12px;
   overflow: hidden;
   box-shadow: var(--shadow-card);
-  display: grid;
-  grid-template-columns: 118px minmax(0, 1fr);
-  min-height: 168px;
+  display: flex;
+  flex-direction: column;
   transition: border-color 150ms, box-shadow 150ms;
 }
 
@@ -903,19 +941,18 @@ textarea:focus {
 
 .thumb {
   position: relative;
+  aspect-ratio: 4 / 3;
   background: #f8fafc;
-  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   display: grid;
   place-items: center;
   overflow: hidden;
-  padding: 10px;
-  min-height: 100%;
+  padding: 8px;
 }
 
 .thumb img {
   width: 100%;
   height: 100%;
-  max-height: 140px;
   object-fit: contain;
 }
 
@@ -980,6 +1017,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1;
   min-width: 0;
 }
 
@@ -2180,47 +2218,46 @@ textarea:focus {
     font-size: 20px;
   }
   .product-grid {
-    grid-template-columns: 1fr;
-    gap: 10px;
-    margin-top: 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 8px;
   }
   .product-card {
-    grid-template-columns: 96px minmax(0, 1fr);
-    min-height: 0;
-    border-radius: 10px;
+    min-width: 0;
+    border-radius: var(--radius-md);
   }
   .thumb {
-    padding: 6px;
-  }
-  .thumb img {
-    max-height: 96px;
+    aspect-ratio: 1;
+    padding: 3px;
   }
   .thumb-sup {
     font-size: 9px;
     padding: 2px 6px;
-    left: 6px;
-    bottom: 6px;
+    left: 4px;
+    bottom: 4px;
   }
   .img-fallback {
-    width: 36px;
-    height: 36px;
-    font-size: 14px;
+    width: 28px;
+    height: 28px;
+    font-size: 13px;
   }
   .product-body {
-    padding: 10px 10px 10px;
+    padding: 5px 5px 6px;
     gap: 2px;
   }
   .sku {
-    font-size: 11px;
+    display: none;
   }
   .product-specs {
     display: none;
   }
   .product-name {
-    font-size: 13px;
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1.2;
   }
   .product-price-block strong {
-    font-size: 15px;
+    font-size: 12px;
   }
   .product-price-block .price-vat {
     display: none;
@@ -2230,7 +2267,7 @@ textarea:focus {
   }
   .product-actions {
     flex-wrap: nowrap;
-    gap: 6px;
+    gap: 0;
     padding-top: 6px;
   }
   .product-actions > .link-btn {
@@ -2638,6 +2675,111 @@ textarea:focus {
 
 .dual-price .muted {
   white-space: nowrap;
+}
+
+/* ── Kit tips (Kapitán Karel, deterministic) ─────────────────────── */
+.kit-tip-bubble {
+  position: fixed;
+  right: calc(18px + env(safe-area-inset-right, 0px));
+  bottom: calc(94px + env(safe-area-inset-bottom, 0px));
+  z-index: 72;
+  width: min(320px, calc(100vw - 28px));
+  padding: 12px 12px 10px;
+  border-radius: var(--radius-xl);
+  background: #fff;
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-pop);
+  animation: kit-tip-in 220ms var(--ease-out);
+}
+
+@keyframes kit-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.kit-tip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.kit-tip-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand-blue);
+  letter-spacing: 0.02em;
+}
+
+.kit-tip-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.kit-tip-msg {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--foreground);
+}
+
+.kit-tip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.kit-tip-actions .btn {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.kit-tip-banner {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--brand-blue-muted);
+  border: 1px solid var(--sup-alsap-border);
+}
+
+.kit-tip-banner-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--brand-blue-ink);
+  margin-bottom: 8px;
+}
+
+.kit-tip-banner-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kit-tip-banner-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.kit-tip-banner-list .btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 /* ── AI assistant „Kapitán Karel“ — floating, bottom-right ───────── */
