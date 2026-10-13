@@ -1,4 +1,4 @@
-export type Unit = 'ks' | 'L'
+export type Unit = 'ks' | 'L' | 'm'
 
 export interface AccessoryType {
   id: string

@@ -47,6 +47,8 @@ def norm(s: str) -> str:
 def get(url: str, retries: int = 3, insecure: bool = False) -> str:
     """Fetch URL. For Hydrotruck SSL failures, callers may retry with insecure=True."""
     import ssl
+    from urllib.error import HTTPError
+
     last: Exception | None = None
     for i in range(retries):
         try:
@@ -56,6 +58,18 @@ def get(url: str, retries: int = 3, insecure: bool = False) -> str:
                 data = r.read().decode("utf-8", "ignore")
             time.sleep(SLEEP)
             return data
+        except HTTPError as e:
+            last = e
+            if e.code == 429:
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    wait = float(retry_after) if retry_after else min(60.0, 5.0 * (2**i))
+                except ValueError:
+                    wait = min(60.0, 5.0 * (2**i))
+                emit_progress(f"HTTP 429 — čekám {wait:.0f}s ({url.split('/')[-1][:48]})")
+                time.sleep(wait)
+                continue
+            time.sleep(0.7 * (i + 1))
         except Exception as e:
             last = e
             time.sleep(0.7 * (i + 1))
@@ -68,6 +82,12 @@ def get_ht(url: str) -> str:
     except Exception as e1:
         emit_progress(f"HT SSL/network fallback (insecure) for {url.split('/')[-1]}: {e1}")
         return get(url, insecure=True)
+
+
+def get_pav(url: str) -> str:
+    """Shopify storefront JSON — polite delay + more 429 retries."""
+    time.sleep(0.55)  # extra spacing before each Pavlínek request
+    return get(url, retries=8)
 
 
 def parse_price(s: str) -> float | None:
@@ -726,7 +746,7 @@ def parse_pavlinek_collection(handle: str, type_slug: str) -> list[dict]:
     page = 1
     while page <= 40:
         url = f"{PAVLINEK_BASE}/collections/{handle}/products.json?limit=250&page={page}"
-        raw = get(url)
+        raw = get_pav(url)
         data = json.loads(raw)
         products = data.get("products") or []
         if not products:
@@ -774,28 +794,29 @@ def parse_pavlinek_collection(handle: str, type_slug: str) -> list[dict]:
     return out
 
 
-def scrape_pavlinek(cmap: dict) -> list[dict]:
+def scrape_pavlinek(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
+    """Sequential scrape (Shopify rate-limits parallel bursts). Returns (rows, failed)."""
     global _pav_seen_ids
     _pav_seen_ids = set()
-    entries = cmap.get("pavlinek") or []
+    entries = [
+        e for e in (cmap.get("pavlinek") or []) if e.get("handle") and e.get("typeSlug")
+    ]
     if not entries:
-        return []
+        return [], set()
     all_rows: list[dict] = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {
-            ex.submit(parse_pavlinek_collection, e["handle"], e["typeSlug"]): (e["typeSlug"], e["handle"])
-            for e in entries
-            if e.get("handle") and e.get("typeSlug")
-        }
-        for fut in as_completed(futs):
-            slug, handle = futs[fut]
-            try:
-                rows = fut.result()
-                emit_progress(f"Pavlínek {slug}: {len(rows)}  {handle}")
-                all_rows.extend(rows)
-            except Exception as e:
-                emit_progress(f"Pavlínek ERR {slug}/{handle}: {e}")
-    return all_rows
+    failed: set[tuple[str, str]] = set()
+    # One worker — parallel 4× collections triggered HTTP 429 from Shopify.
+    for i, e in enumerate(entries, 1):
+        slug, handle = e["typeSlug"], e["handle"]
+        try:
+            rows = parse_pavlinek_collection(handle, slug)
+            emit_progress(f"Pavlínek {i}/{len(entries)} {slug}: {len(rows)}  {handle}")
+            all_rows.extend(rows)
+        except Exception as err:
+            failed.add(("Pavlínek", slug))
+            emit_progress(f"Pavlínek ERR {slug}/{handle}: {err}")
+        time.sleep(0.4)
+    return all_rows, failed
 
 
 def expand_alsap_variants(items: list[dict]) -> list[dict]:
@@ -927,13 +948,14 @@ def main() -> None:
                 failed.add(("Hydrotruck", s))
                 emit_progress(f"HT ERR {s}: {e}")
 
-    # Pavlínek (Shopify JSON)
+    # Pavlínek (Shopify JSON) — sequential + 429 backoff (store rate-limits bursts)
     if os.environ.get("SKIP_PAVLINEK") != "1":
         emit_progress("=== Pavlínek ===")
         try:
-            pav = scrape_pavlinek(cmap)
+            pav, pav_failed = scrape_pavlinek(cmap)
             all_items.extend(pav)
-            emit_progress(f"Pavlínek total unique: {len(pav)}")
+            failed |= pav_failed
+            emit_progress(f"Pavlínek total unique: {len(pav)}" + (f" · failed types {len(pav_failed)}" if pav_failed else ""))
         except Exception as e:
             failed.add(("Pavlínek", "*"))
             emit_progress(f"Pavlínek ERR: {e}")

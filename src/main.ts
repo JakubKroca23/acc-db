@@ -189,6 +189,8 @@ let catalogError: string | null = null
 let searchTimer: number | undefined
 
 let updateStatus: CatalogUpdateStatus | null = null
+/** Dev-only overlay while scrape+seed runs. */
+let updateModalOpen = false
 let updatePolling: number | undefined
 let toastMsg = ''
 let catalogInfoOpen = false
@@ -226,6 +228,10 @@ async function loadBootstrap() {
     if (statsRes.ok) {
       stats = (await statsRes.json()) as DbStats
       updateStatus = (stats as DbStats & { catalogUpdate?: CatalogUpdateStatus }).catalogUpdate || null
+      if (updateStatus?.state === 'running') {
+        updateModalOpen = true
+        startUpdatePolling()
+      }
     }
     // Default view = „Vše“, unless a (valid) category is already selected via #/slug.
     if (!selectedSlug || (selectedSlug !== ALL_SLUG && !types.some((t) => t.slug === selectedSlug))) {
@@ -551,7 +557,162 @@ function printQuote() {
 }
 
 // ── catalog update ────────────────────────────────────────────────
+function updatePhaseMeta(phase: string, state: CatalogUpdateStatus['state']): {
+  step: number
+  label: string
+  pct: number
+} {
+  const p = (phase || '').toLowerCase()
+  if (state === 'ok') return { step: 3, label: 'Hotovo', pct: 100 }
+  if (state === 'error') return { step: p.includes('seed') ? 2 : 1, label: 'Chyba', pct: p.includes('seed') ? 72 : 35 }
+  if (p.includes('seed')) return { step: 2, label: 'Ukládám do databáze', pct: 72 }
+  if (p.includes('scrape')) return { step: 1, label: 'Stahuji katalogy dodavatelů', pct: 38 }
+  if (p.includes('start')) return { step: 0, label: 'Připravuji aktualizaci', pct: 8 }
+  return { step: 0, label: phase || 'Běží…', pct: 15 }
+}
+
+function updateElapsed(startedAt: string | null, finishedAt: string | null): string {
+  if (!startedAt) return ''
+  const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
+  const sec = Math.max(0, Math.round((end - new Date(startedAt).getTime()) / 1000))
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${s} s`
+}
+
+function updateModalHtml(): string {
+  if (!updateModalOpen) return ''
+  const st = updateStatus
+  const state = st?.state || 'running'
+  const phase = st?.phase || 'starting'
+  const meta = updatePhaseMeta(phase, state === 'idle' ? 'running' : state)
+  const elapsed = updateElapsed(st?.startedAt || null, st?.finishedAt || null)
+  const logs = (st?.logs || []).slice(-40)
+  const bySup = st?.counts?.bySupplier || {}
+  const supplierChips = Object.entries(bySup)
+    .sort((a, b) => b[1] - a[1])
+    .map(
+      ([name, n]) =>
+        `<span class="upd-chip"><span class="sup-badge sup-${supplierKey(name)}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(name)}</span><span class="upd-chip-n">${n}</span></span>`,
+    )
+    .join('')
+  const seed = st?.seed
+  const steps = [
+    { id: 0, title: 'Start' },
+    { id: 1, title: 'Scrape' },
+    { id: 2, title: 'Seed' },
+    { id: 3, title: 'Hotovo' },
+  ]
+  const canClose = state === 'ok' || state === 'error'
+  const title =
+    state === 'ok' ? 'Katalog je aktuální' : state === 'error' ? 'Aktualizace selhala' : 'Aktualizace katalogu'
+  const subtitle =
+    state === 'ok'
+      ? 'Scrape i zápis do Appwrite doběhly úspěšně.'
+      : state === 'error'
+        ? st?.error || 'Došlo k chybě — detaily v logu níže.'
+        : 'Stahuji veřejné katalogy a synchronizuji Appwrite. Může to trvat několik minut.'
+
+  return `
+    <div class="upd-modal-root" role="dialog" aria-modal="true" aria-labelledby="upd-modal-title" data-update-modal>
+      <div class="upd-modal-backdrop"${canClose ? ' data-action="close-update-modal"' : ''}></div>
+      <div class="upd-modal">
+        <header class="upd-modal-head">
+          <div class="upd-modal-brand">
+            <span class="upd-modal-icon ${state === 'ok' ? 'ok' : state === 'error' ? 'err' : 'run'}" aria-hidden="true">
+              ${
+                state === 'ok'
+                  ? '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+                  : state === 'error'
+                    ? '<svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5h.01M12 3l9.5 16.5H2.5L12 3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+                    : '<svg viewBox="0 0 24 24" class="upd-spin"><path d="M12 3a9 9 0 1 0 9 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>'
+              }
+            </span>
+            <div>
+              <h2 id="upd-modal-title">${escapeHtml(title)}</h2>
+              <p class="upd-modal-sub">${escapeHtml(subtitle)}</p>
+            </div>
+          </div>
+          ${
+            canClose
+              ? `<button type="button" class="upd-modal-close" data-action="close-update-modal" aria-label="Zavřít">×</button>`
+              : elapsed
+                ? `<span class="upd-elapsed" title="Uplynulý čas">${escapeHtml(elapsed)}</span>`
+                : ''
+          }
+        </header>
+
+        <ol class="upd-steps" aria-label="Fáze aktualizace">
+          ${steps
+            .map((s) => {
+              const done = state === 'ok' ? true : meta.step > s.id
+              const active = state !== 'ok' && state !== 'error' && meta.step === s.id
+              const bad = state === 'error' && meta.step === s.id
+              return `<li class="upd-step ${done ? 'done' : ''} ${active ? 'active' : ''} ${bad ? 'bad' : ''}"><span class="upd-step-dot">${done && !bad ? '✓' : s.id + 1}</span><span class="upd-step-label">${s.title}</span></li>`
+            })
+            .join('')}
+        </ol>
+
+        <div class="upd-progress-block">
+          <div class="upd-progress-meta">
+            <span class="upd-phase">${escapeHtml(meta.label)}</span>
+            <span class="upd-pct">${meta.pct} %</span>
+          </div>
+          <div class="upd-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${meta.pct}">
+            <div class="upd-progress-bar ${state === 'error' ? 'err' : state === 'ok' ? 'ok' : ''}" style="width:${meta.pct}%"></div>
+          </div>
+        </div>
+
+        ${
+          supplierChips || st?.counts?.total
+            ? `<div class="upd-stats">
+                ${st?.counts?.total != null ? `<div class="upd-stat"><span class="upd-stat-k">Produktů ve scrape</span><span class="upd-stat-v">${st.counts.total}</span></div>` : ''}
+                ${seed ? `<div class="upd-stat"><span class="upd-stat-k">Vytvořeno / upraveno</span><span class="upd-stat-v">${seed.created} / ${seed.updated}</span></div>` : ''}
+                ${supplierChips ? `<div class="upd-suppliers">${supplierChips}</div>` : ''}
+              </div>`
+            : ''
+        }
+
+        <div class="upd-log-wrap">
+          <div class="upd-log-head">Průběh</div>
+          <pre class="upd-log" data-update-log>${
+            logs.length
+              ? logs.map((l) => escapeHtml(l)).join('\n')
+              : 'Čekám na první výstup ze serveru…'
+          }</pre>
+        </div>
+
+        <footer class="upd-modal-foot">
+          ${
+            canClose
+              ? `<button type="button" class="btn btn-primary" data-action="close-update-modal">${state === 'ok' ? 'Hotovo' : 'Zavřít'}</button>`
+              : `<span class="upd-foot-hint">Okno nechte otevřené — aktualizace běží na serveru.</span>`
+          }
+        </footer>
+      </div>
+    </div>`
+}
+
+function renderUpdateModal() {
+  const el = region('update-modal')
+  el.innerHTML = updateModalHtml()
+  const log = el.querySelector<HTMLElement>('[data-update-log]')
+  if (log) log.scrollTop = log.scrollHeight
+}
+
 async function triggerUpdate() {
+  updateModalOpen = true
+  updateStatus = {
+    state: 'running',
+    phase: 'starting',
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    logs: ['Připravuji aktualizaci…'],
+    error: null,
+    counts: null,
+    seed: null,
+  }
+  render()
   try {
     const headers: Record<string, string> = {}
     let token = localStorage.getItem('acc-db-update-token') || ''
@@ -560,7 +721,12 @@ async function triggerUpdate() {
         'Volitelný update token (ACC_DB_UPDATE_TOKEN). Nechte prázdné, pokud server token nevyžaduje:',
         '',
       )
-      if (entered === null) return
+      if (entered === null) {
+        updateModalOpen = false
+        updateStatus = null
+        render()
+        return
+      }
       token = entered.trim()
       if (token) localStorage.setItem('acc-db-update-token', token)
     }
@@ -573,11 +739,19 @@ async function triggerUpdate() {
     }
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     updateStatus = data.status as CatalogUpdateStatus
-    toastMsg = data.started ? 'Aktualizace katalogu spuštěna…' : 'Aktualizace už běží'
     startUpdatePolling()
     render()
   } catch (err) {
-    toastMsg = err instanceof Error ? err.message : 'Chyba aktualizace'
+    updateStatus = {
+      state: 'error',
+      phase: 'error',
+      startedAt: updateStatus?.startedAt || new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      logs: [...(updateStatus?.logs || []), err instanceof Error ? err.message : 'Chyba aktualizace'],
+      error: err instanceof Error ? err.message : 'Chyba aktualizace',
+      counts: null,
+      seed: null,
+    }
     render()
   }
 }
@@ -589,18 +763,19 @@ function startUpdatePolling() {
       const res = await apiFetch(`/catalog/update/status`)
       if (!res.ok) return
       updateStatus = (await res.json()) as CatalogUpdateStatus
+      updateModalOpen = true
       render()
       if (updateStatus.state === 'ok' || updateStatus.state === 'error') {
         window.clearInterval(updatePolling)
         if (updateStatus.state === 'ok') {
-          toastMsg = 'Katalog aktualizován'
           await loadBootstrap()
+          render()
         }
       }
     } catch {
       /* ignore */
     }
-  }, 2000)
+  }, 1500)
 }
 
 // ── supplier colours & images ─────────────────────────────────────
@@ -972,14 +1147,14 @@ function quotePanelHtml(): string {
 }
 
 function updateStatusHtml(): string {
-  if (!updateStatus || updateStatus.state === 'idle') return ''
-  const logs = (updateStatus.logs || []).slice(-8).map((l) => escapeHtml(l)).join('<br />')
+  // Compact strip only when modal is closed but a finished status remains.
+  if (updateModalOpen || !updateStatus || updateStatus.state === 'idle' || updateStatus.state === 'running') return ''
   return `
     <div class="update-status state-${escapeAttr(updateStatus.state)}">
-      <strong>Aktualizace katalogu:</strong> ${escapeHtml(updateStatus.phase)}
+      <strong>Poslední aktualizace:</strong> ${escapeHtml(updateStatus.phase)}
       ${updateStatus.error ? ` — ${escapeHtml(updateStatus.error)}` : ''}
-      ${updateStatus.counts ? ` · ${updateStatus.counts.total} produktů ve scrape` : ''}
-      ${logs ? `<div class="update-logs">${logs}</div>` : ''}
+      ${updateStatus.counts ? ` · ${updateStatus.counts.total} produktů` : ''}
+      <button type="button" class="link-btn" data-action="open-update-modal" style="margin-left:8px">Zobrazit detail</button>
     </div>`
 }
 
@@ -1016,6 +1191,7 @@ app.innerHTML = `
         <main class="content" data-region="main"></main>
       </div>
     </div>
+    <div data-region="update-modal"></div>
   </div>
 `
 
@@ -1258,6 +1434,7 @@ function render() {
   renderNav()
   renderNotices()
   renderMain()
+  renderUpdateModal()
   if (searchEl.value !== searchQ && document.activeElement !== searchEl) searchEl.value = searchQ
 }
 
@@ -1408,6 +1585,16 @@ app.addEventListener('click', (e) => {
     case 'update-catalog':
       if (!isCatalogDev()) break
       void triggerUpdate()
+      break
+    case 'close-update-modal':
+      updateModalOpen = false
+      renderUpdateModal()
+      break
+    case 'open-update-modal':
+      if (updateStatus && updateStatus.state !== 'idle') {
+        updateModalOpen = true
+        renderUpdateModal()
+      }
       break
     case 'toggle-catalog-info':
       if (!isCatalogDev()) break
