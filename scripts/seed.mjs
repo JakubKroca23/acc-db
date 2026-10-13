@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { Client, TablesDB, Permission, Role, Query, ID } from 'node-appwrite'
+import { Client, TablesDB, Databases, Permission, Role, Query, ID } from 'node-appwrite'
 
 const endpoint = process.env.APPWRITE_ENDPOINT
 const projectId = process.env.APPWRITE_PROJECT_ID
@@ -20,25 +20,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const products = JSON.parse(readFileSync(join(__dirname, 'scraped_products.json'), 'utf8'))
 const categoryMap = JSON.parse(readFileSync(join(__dirname, 'category-map.json'), 'utf8'))
 
-const accessories = categoryMap.accessories.map((a) => {
-  const typeProducts = products.filter((p) => p.typeSlug === a.slug)
-  const prices = typeProducts.map((p) => Number(p.price)).filter((n) => n > 0)
-  const suppliers = [...new Set(typeProducts.map((p) => p.supplier).filter((s) => s !== 'tržní odhad'))]
-  return {
-    slug: a.slug,
-    name: a.name,
-    category: a.category,
-    unit: a.unit,
-    priceApprox: a.priceApprox,
-    priceMin: prices.length ? Math.min(...prices) : a.priceApprox,
-    priceMax: prices.length ? Math.max(...prices) : a.priceApprox,
-    source: suppliers.join(' / ') || 'katalog',
-    sourceUrl: null,
-    note: a.relatedGroup ? `related:${a.relatedGroup}` : null,
-    sortOrder: a.sortOrder,
-    parentSlug: a.parentSlug,
-  }
-})
+function buildAccessories() {
+  return categoryMap.accessories.map((a) => {
+    const typeProducts = products.filter((p) => p.typeSlug === a.slug)
+    const prices = typeProducts.map((p) => Number(p.price)).filter((n) => n > 0)
+    const suppliers = [...new Set(typeProducts.map((p) => p.supplier).filter((s) => s !== 'tržní odhad'))]
+    return {
+      slug: a.slug,
+      name: a.name,
+      category: a.category,
+      unit: normalizeUnit(a.unit),
+      priceApprox: a.priceApprox,
+      priceMin: prices.length ? Math.min(...prices) : a.priceApprox,
+      priceMax: prices.length ? Math.max(...prices) : a.priceApprox,
+      source: suppliers.join(' / ') || 'katalog',
+      sourceUrl: null,
+      note: a.relatedGroup ? `related:${a.relatedGroup}` : null,
+      sortOrder: a.sortOrder,
+      parentSlug: a.parentSlug,
+    }
+  })
+}
 
 function productId(p) {
   const raw = `${p.supplier}|${p.productUrl || p.name}`
@@ -60,6 +62,75 @@ function safeUrl(value) {
 
 const client = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey)
 const db = new TablesDB(client)
+const databases = new Databases(client)
+
+/** Appwrite enum on accessories/products.unit was created as (ks, L); metráž needs `m`. */
+const UNIT_ELEMENTS = ['ks', 'L', 'm']
+/** Set true after Appwrite accepts `m` on the unit enum. */
+let unitMeterAllowed = false
+
+function normalizeUnit(unit) {
+  const u = String(unit || 'ks').trim()
+  if (u === 'm' && !unitMeterAllowed) return 'ks'
+  return UNIT_ELEMENTS.includes(u) ? u : 'ks'
+}
+
+function pickUnitAttr(attrsPayload) {
+  const list = attrsPayload?.attributes || attrsPayload?.columns || attrsPayload
+  if (!Array.isArray(list)) return null
+  return list.find((a) => a && a.key === 'unit') || null
+}
+
+async function ensureUnitEnum() {
+  for (const collectionId of ['accessories', 'products']) {
+    try {
+      if (typeof db.updateEnumColumn === 'function') {
+        await db.updateEnumColumn({
+          databaseId,
+          tableId: collectionId,
+          key: 'unit',
+          elements: UNIT_ELEMENTS,
+          required: true,
+          default: 'ks',
+        })
+      } else {
+        await databases.updateEnumAttribute({
+          databaseId,
+          collectionId,
+          key: 'unit',
+          elements: UNIT_ELEMENTS,
+          required: true,
+          default: 'ks',
+        })
+      }
+      console.log('unit enum updated', collectionId, UNIT_ELEMENTS.join(','))
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn('unit enum update', collectionId, msg)
+    }
+  }
+  // Enum attribute changes are asynchronous in Appwrite.
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 1000))
+    try {
+      const attrs = await databases.listAttributes({ databaseId, collectionId: 'accessories' })
+      const unit = pickUnitAttr(attrs)
+      const elements = unit?.elements || []
+      const status = unit?.status
+      if (elements.includes('m') && (!status || status === 'available')) {
+        unitMeterAllowed = true
+        console.log('unit enum ready on accessories:', elements.join(','))
+        return
+      }
+      console.log(`waiting for unit enum… status=${status || '?'} elements=${elements.join(',') || '?'}`)
+    } catch (err) {
+      console.warn('unit enum poll', err instanceof Error ? err.message : err)
+    }
+  }
+  console.warn(
+    'unit enum still without `m` — seeding metráž as unit=ks (set unit enum to ks,L,m in Appwrite Console)',
+  )
+}
 
 async function ensurePriceHistoryTable() {
   try {
@@ -96,6 +167,9 @@ async function ensurePriceHistoryTable() {
 }
 
 await ensurePriceHistoryTable()
+await ensureUnitEnum()
+
+const accessories = buildAccessories()
 
 const REMOVE_ACCESSORIES = ['kos-na-sit', 'meziram', 'zadni-zabrana']
 for (const id of REMOVE_ACCESSORIES) {
@@ -203,7 +277,7 @@ for (const p of products) {
     supplier: p.supplier,
     price: Number(p.price),
     priceVat: Number(p.priceVat),
-    unit: p.unit || 'ks',
+    unit: normalizeUnit(p.unit),
     dimensions: p.dimensions || null,
     imageUrl: safeUrl(p.imageUrl),
     productUrl: safeUrl(p.productUrl),
