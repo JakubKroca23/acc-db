@@ -191,6 +191,9 @@ let searchTimer: number | undefined
 let updateStatus: CatalogUpdateStatus | null = null
 /** Dev-only overlay while scrape+seed runs. */
 let updateModalOpen = false
+/** Modal open before POST — user can skip Pavlínek / cancel. */
+let updateAwaitingConfirm = false
+let updateSkipPavlinek = false
 let updatePolling: number | undefined
 let toastMsg = ''
 let catalogInfoOpen = false
@@ -564,6 +567,8 @@ function updatePhaseMeta(phase: string, state: CatalogUpdateStatus['state']): {
 } {
   const p = (phase || '').toLowerCase()
   if (state === 'ok') return { step: 3, label: 'Hotovo', pct: 100 }
+  if (p.includes('stopped') || (state === 'error' && p.includes('stop')))
+    return { step: p.includes('seed') ? 2 : 1, label: 'Zastaveno', pct: p.includes('seed') ? 72 : 35 }
   if (state === 'error') return { step: p.includes('seed') ? 2 : 1, label: 'Chyba', pct: p.includes('seed') ? 72 : 35 }
   if (p.includes('seed')) return { step: 2, label: 'Ukládám do databáze', pct: 72 }
   if (p.includes('scrape')) return { step: 1, label: 'Stahuji katalogy dodavatelů', pct: 38 }
@@ -582,9 +587,38 @@ function updateElapsed(startedAt: string | null, finishedAt: string | null): str
 
 function updateModalHtml(): string {
   if (!updateModalOpen) return ''
+  if (updateAwaitingConfirm) {
+    return `
+    <div class="upd-modal-root" role="dialog" aria-modal="true" aria-labelledby="upd-modal-title" data-update-modal>
+      <div class="upd-modal-backdrop" data-action="close-update-modal"></div>
+      <div class="upd-modal">
+        <header class="upd-modal-head">
+          <div class="upd-modal-brand">
+            <span class="upd-modal-icon run" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </span>
+            <div>
+              <h2 id="upd-modal-title">Aktualizovat katalog</h2>
+              <p class="upd-modal-sub">Scrape dodavatelů + zápis do Appwrite. Pavlínek (Shopify) je pomalý a často vrací 429 — při problémech ho přeskočte.</p>
+            </div>
+          </div>
+          <button type="button" class="upd-modal-close" data-action="close-update-modal" aria-label="Zavřít">×</button>
+        </header>
+        <label class="upd-option">
+          <input type="checkbox" data-skip-pavlinek ${updateSkipPavlinek ? 'checked' : ''} />
+          <span><strong>Přeskočit Pavlínek</strong> — nechá poslední známé položky, aktualizuje ALSAP / TT / Hydrotruck</span>
+        </label>
+        <footer class="upd-modal-foot">
+          <button type="button" class="btn btn-ghost" data-action="close-update-modal">Zrušit</button>
+          <button type="button" class="btn btn-primary" data-action="confirm-update-catalog">Spustit aktualizaci</button>
+        </footer>
+      </div>
+    </div>`
+  }
   const st = updateStatus
   const state = st?.state || 'running'
   const phase = st?.phase || 'starting'
+  const stopped = phase === 'stopped' || (st?.error || '').includes('Zastaveno')
   const meta = updatePhaseMeta(phase, state === 'idle' ? 'running' : state)
   const elapsed = updateElapsed(st?.startedAt || null, st?.finishedAt || null)
   const logs = (st?.logs || []).slice(-40)
@@ -604,14 +638,23 @@ function updateModalHtml(): string {
     { id: 3, title: 'Hotovo' },
   ]
   const canClose = state === 'ok' || state === 'error'
+  const running = state === 'running'
   const title =
-    state === 'ok' ? 'Katalog je aktuální' : state === 'error' ? 'Aktualizace selhala' : 'Aktualizace katalogu'
+    state === 'ok'
+      ? 'Katalog je aktuální'
+      : stopped
+        ? 'Aktualizace zastavena'
+        : state === 'error'
+          ? 'Aktualizace selhala'
+          : 'Aktualizace katalogu'
   const subtitle =
     state === 'ok'
       ? 'Scrape i zápis do Appwrite doběhly úspěšně.'
-      : state === 'error'
-        ? st?.error || 'Došlo k chybě — detaily v logu níže.'
-        : 'Stahuji veřejné katalogy a synchronizuji Appwrite. Může to trvat několik minut.'
+      : stopped
+        ? 'Proces byl ukončen. Částečný scrape mohl zůstat v souboru — znovu spusťte, nebo přeskočte Pavlínek.'
+        : state === 'error'
+          ? st?.error || 'Došlo k chybě — detaily v logu níže.'
+          : 'Stahuji veřejné katalogy a synchronizuji Appwrite. Pavlínek běží pomalu kvůli limitům Shopify.'
 
   return `
     <div class="upd-modal-root" role="dialog" aria-modal="true" aria-labelledby="upd-modal-title" data-update-modal>
@@ -684,9 +727,12 @@ function updateModalHtml(): string {
 
         <footer class="upd-modal-foot">
           ${
-            canClose
-              ? `<button type="button" class="btn btn-primary" data-action="close-update-modal">${state === 'ok' ? 'Hotovo' : 'Zavřít'}</button>`
-              : `<span class="upd-foot-hint">Okno nechte otevřené — aktualizace běží na serveru.</span>`
+            running
+              ? `<span class="upd-foot-hint">Aktualizace běží na serveru.</span>
+                 <button type="button" class="btn btn-danger" data-action="stop-update-catalog">Zastavit</button>`
+              : canClose
+                ? `<button type="button" class="btn btn-primary" data-action="close-update-modal">${state === 'ok' ? 'Hotovo' : 'Zavřít'}</button>`
+                : ''
           }
         </footer>
       </div>
@@ -700,38 +746,58 @@ function renderUpdateModal() {
   if (log) log.scrollTop = log.scrollHeight
 }
 
+function openUpdateConfirm() {
+  updateModalOpen = true
+  updateAwaitingConfirm = true
+  updateSkipPavlinek = localStorage.getItem('acc-db-skip-pavlinek') === '1'
+  renderUpdateModal()
+}
+
+async function updateAuthHeaders(): Promise<Record<string, string> | null> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  let token = localStorage.getItem('acc-db-update-token') || ''
+  if (!token) {
+    const entered = window.prompt(
+      'Volitelný update token (ACC_DB_UPDATE_TOKEN). Nechte prázdné, pokud server token nevyžaduje:',
+      '',
+    )
+    if (entered === null) return null
+    token = entered.trim()
+    if (token) localStorage.setItem('acc-db-update-token', token)
+  }
+  if (token) headers['X-Update-Token'] = token
+  return headers
+}
+
 async function triggerUpdate() {
+  updateAwaitingConfirm = false
   updateModalOpen = true
   updateStatus = {
     state: 'running',
     phase: 'starting',
     startedAt: new Date().toISOString(),
     finishedAt: null,
-    logs: ['Připravuji aktualizaci…'],
+    logs: [
+      updateSkipPavlinek ? 'Připravuji aktualizaci (bez Pavlínek)…' : 'Připravuji aktualizaci…',
+    ],
     error: null,
     counts: null,
     seed: null,
   }
   render()
   try {
-    const headers: Record<string, string> = {}
-    let token = localStorage.getItem('acc-db-update-token') || ''
-    if (!token) {
-      const entered = window.prompt(
-        'Volitelný update token (ACC_DB_UPDATE_TOKEN). Nechte prázdné, pokud server token nevyžaduje:',
-        '',
-      )
-      if (entered === null) {
-        updateModalOpen = false
-        updateStatus = null
-        render()
-        return
-      }
-      token = entered.trim()
-      if (token) localStorage.setItem('acc-db-update-token', token)
+    const headers = await updateAuthHeaders()
+    if (!headers) {
+      updateModalOpen = false
+      updateStatus = null
+      render()
+      return
     }
-    if (token) headers['X-Update-Token'] = token
-    const res = await apiFetch(`/catalog/update`, { method: 'POST', headers })
+    const res = await apiFetch(`/catalog/update`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ skipPavlinek: updateSkipPavlinek }),
+    })
     const data = await res.json()
     if (res.status === 401) {
       localStorage.removeItem('acc-db-update-token')
@@ -752,6 +818,22 @@ async function triggerUpdate() {
       counts: null,
       seed: null,
     }
+    render()
+  }
+}
+
+async function stopUpdate() {
+  try {
+    const headers = await updateAuthHeaders()
+    if (!headers) return
+    const res = await apiFetch(`/catalog/update/stop`, { method: 'POST', headers, body: '{}' })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    updateStatus = (data.status || data) as CatalogUpdateStatus
+    window.clearInterval(updatePolling)
+    render()
+  } catch (err) {
+    toastMsg = err instanceof Error ? err.message : 'Nepodařilo se zastavit'
     render()
   }
 }
@@ -1584,15 +1666,30 @@ app.addEventListener('click', (e) => {
       break
     case 'update-catalog':
       if (!isCatalogDev()) break
+      openUpdateConfirm()
+      break
+    case 'confirm-update-catalog':
+      if (!isCatalogDev()) break
+      {
+        const skip = app.querySelector<HTMLInputElement>('[data-skip-pavlinek]')
+        updateSkipPavlinek = !!skip?.checked
+        localStorage.setItem('acc-db-skip-pavlinek', updateSkipPavlinek ? '1' : '0')
+      }
       void triggerUpdate()
+      break
+    case 'stop-update-catalog':
+      if (!isCatalogDev()) break
+      void stopUpdate()
       break
     case 'close-update-modal':
       updateModalOpen = false
+      updateAwaitingConfirm = false
       renderUpdateModal()
       break
     case 'open-update-modal':
       if (updateStatus && updateStatus.state !== 'idle') {
         updateModalOpen = true
+        updateAwaitingConfirm = false
         renderUpdateModal()
       }
       break

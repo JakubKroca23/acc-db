@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,10 +22,17 @@ export type CatalogUpdateStatus = {
   seed: { accessories: number; products: number; created: number; updated: number } | null
 }
 
+export type CatalogUpdateOptions = {
+  /** Skip Pavlínek Shopify scrape (keeps last known Pavlínek rows via seed carry-over). */
+  skipPavlinek?: boolean
+}
+
 const MAX_LOGS = 200
 
 let status: CatalogUpdateStatus = loadStatus()
 let running = false
+let stopRequested = false
+let currentChild: ChildProcess | null = null
 
 function loadStatus(): CatalogUpdateStatus {
   try {
@@ -80,23 +87,59 @@ function summarizeJson(): CatalogUpdateStatus['counts'] {
   }
 }
 
-function runCmd(cmd: string, args: string[], phase: string): Promise<number> {
+function killChild(child: ChildProcess | null) {
+  if (!child || child.killed) return
+  try {
+    child.kill('SIGTERM')
+  } catch {
+    /* ignore */
+  }
+  setTimeout(() => {
+    try {
+      if (!child.killed) child.kill('SIGKILL')
+    } catch {
+      /* ignore */
+    }
+  }, 1500)
+}
+
+function runCmd(
+  cmd: string,
+  args: string[],
+  phase: string,
+  envExtra: Record<string, string> = {},
+): Promise<number> {
   return new Promise((resolve, reject) => {
+    if (stopRequested) {
+      resolve(130)
+      return
+    }
     status.phase = phase
     pushLog(`$ ${cmd} ${args.join(' ')}`)
     saveStatus()
     const child = spawn(cmd, args, {
       cwd: ROOT,
-      env: process.env,
+      env: { ...process.env, ...envExtra },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+    currentChild = child
     const onData = (buf: Buffer) => {
       for (const line of buf.toString('utf8').split('\n')) pushLog(line)
     }
     child.stdout.on('data', onData)
     child.stderr.on('data', onData)
-    child.on('error', reject)
-    child.on('close', (code) => resolve(code ?? 1))
+    child.on('error', (err) => {
+      if (currentChild === child) currentChild = null
+      reject(err)
+    })
+    child.on('close', (code, signal) => {
+      if (currentChild === child) currentChild = null
+      if (stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL') {
+        resolve(130)
+        return
+      }
+      resolve(code ?? 1)
+    })
   })
 }
 
@@ -104,11 +147,32 @@ export function getCatalogUpdateStatus(): CatalogUpdateStatus {
   return status
 }
 
-export function startCatalogUpdate(): { started: boolean; status: CatalogUpdateStatus } {
+export function stopCatalogUpdate(): { stopped: boolean; status: CatalogUpdateStatus } {
+  if (!running && status.state !== 'running') {
+    return { stopped: false, status }
+  }
+  stopRequested = true
+  pushLog('STOP — zastavuji aktualizaci…')
+  killChild(currentChild)
+  status.state = 'error'
+  status.phase = 'stopped'
+  status.error = 'Zastaveno uživatelem'
+  status.finishedAt = new Date().toISOString()
+  status.counts = summarizeJson()
+  running = false
+  saveStatus()
+  return { stopped: true, status }
+}
+
+export function startCatalogUpdate(
+  opts: CatalogUpdateOptions = {},
+): { started: boolean; status: CatalogUpdateStatus } {
   if (running || status.state === 'running') {
     return { started: false, status }
   }
   running = true
+  stopRequested = false
+  currentChild = null
   status = {
     state: 'running',
     phase: 'starting',
@@ -119,19 +183,26 @@ export function startCatalogUpdate(): { started: boolean; status: CatalogUpdateS
     counts: null,
     seed: null,
   }
+  if (opts.skipPavlinek) pushLog('Volba: přeskočit Pavlínek (ponechat poslední scrape)')
   saveStatus()
+
+  const scrapeEnv: Record<string, string> = {}
+  if (opts.skipPavlinek) scrapeEnv.SKIP_PAVLINEK = '1'
 
   void (async () => {
     try {
-      const scrapeCode = await runCmd('python3', ['-u', 'scripts/scrape_products.py'], 'scrape')
+      const scrapeCode = await runCmd('python3', ['-u', 'scripts/scrape_products.py'], 'scrape', scrapeEnv)
+      if (stopRequested || scrapeCode === 130) throw new Error('Zastaveno uživatelem')
       if (scrapeCode !== 0) throw new Error(`Scrape failed (exit ${scrapeCode})`)
       status.counts = summarizeJson()
       saveStatus()
 
+      if (stopRequested) throw new Error('Zastaveno uživatelem')
+
       const seedCode = await runCmd('node', ['scripts/seed.mjs'], 'seed')
+      if (stopRequested || seedCode === 130) throw new Error('Zastaveno uživatelem')
       if (seedCode !== 0) throw new Error(`Seed failed (exit ${seedCode})`)
 
-      // Try parse last JSON line from seed
       const jsonLine = [...status.logs].reverse().find((l) => l.trim().startsWith('{') && l.includes('"ok"'))
       if (jsonLine) {
         try {
@@ -157,13 +228,17 @@ export function startCatalogUpdate(): { started: boolean; status: CatalogUpdateS
       status.finishedAt = new Date().toISOString()
       pushLog('Catalogue update finished OK')
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       status.state = 'error'
-      status.phase = 'error'
-      status.error = err instanceof Error ? err.message : String(err)
+      status.phase = stopRequested || msg.includes('Zastaveno') ? 'stopped' : 'error'
+      status.error = msg
       status.finishedAt = new Date().toISOString()
+      status.counts = status.counts || summarizeJson()
       pushLog(`ERROR: ${status.error}`)
     } finally {
       running = false
+      currentChild = null
+      stopRequested = false
       saveStatus()
     }
   })()

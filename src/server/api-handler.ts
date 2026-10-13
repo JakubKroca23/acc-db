@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client, TablesDB, Query } from 'node-appwrite'
 import { SHIPPING_RATES, SHIPPING_AVG } from '../shipping.ts'
-import { getCatalogUpdateStatus, startCatalogUpdate } from './catalog-update.ts'
+import { getCatalogUpdateStatus, startCatalogUpdate, stopCatalogUpdate } from './catalog-update.ts'
 import { handleImageProxy } from './image-proxy.ts'
 import { createChatHandler } from './chat.ts'
 
@@ -427,9 +427,27 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
           json(res, 401, { error: 'Unauthorized — missing or invalid X-Update-Token' })
           return
         }
-        await readBody(req) // drain
-        const result = startCatalogUpdate()
+        const body = await readBody(req)
+        let skipPavlinek = false
+        try {
+          const parsed = body ? (JSON.parse(body) as { skipPavlinek?: boolean }) : null
+          skipPavlinek = !!parsed?.skipPavlinek
+        } catch {
+          /* empty / non-JSON body */
+        }
+        const result = startCatalogUpdate({ skipPavlinek })
         json(res, result.started ? 202 : 200, result)
+        return
+      }
+
+      if (method === 'POST' && pathOnly === '/api/catalog/update/stop') {
+        if (!checkUpdateAuth(req)) {
+          json(res, 401, { error: 'Unauthorized — missing or invalid X-Update-Token' })
+          return
+        }
+        await readBody(req)
+        const result = stopCatalogUpdate()
+        json(res, 200, result)
         return
       }
 

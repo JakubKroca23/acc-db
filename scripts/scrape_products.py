@@ -63,10 +63,11 @@ def get(url: str, retries: int = 3, insecure: bool = False) -> str:
             if e.code == 429:
                 retry_after = e.headers.get("Retry-After") if e.headers else None
                 try:
-                    wait = float(retry_after) if retry_after else min(60.0, 5.0 * (2**i))
+                    wait = float(retry_after) if retry_after else min(20.0, 4.0 * (2**i))
                 except ValueError:
-                    wait = min(60.0, 5.0 * (2**i))
-                emit_progress(f"HTTP 429 — čekám {wait:.0f}s ({url.split('/')[-1][:48]})")
+                    wait = min(20.0, 4.0 * (2**i))
+                wait = min(wait, 20.0)  # never sit 60s×N on Shopify Retry-After
+                emit_progress(f"HTTP 429 — čekám {wait:.0f}s ({url.split('?')[0].rstrip('/').split('/')[-1]})")
                 time.sleep(wait)
                 continue
             time.sleep(0.7 * (i + 1))
@@ -84,10 +85,42 @@ def get_ht(url: str) -> str:
         return get(url, insecure=True)
 
 
+# Pavlínek / Shopify: adaptive gap — grows after 429 so we don't hammer the storefront.
+_pav_gap_s = 2.2
+_pav_429_count = 0
+
+
 def get_pav(url: str) -> str:
-    """Shopify storefront JSON — polite delay + more 429 retries."""
-    time.sleep(0.55)  # extra spacing before each Pavlínek request
-    return get(url, retries=8)
+    """Shopify storefront JSON — slow sequential pacing, few short 429 retries then fail."""
+    global _pav_gap_s, _pav_429_count
+    from urllib.error import HTTPError
+
+    time.sleep(_pav_gap_s)
+    last: Exception | None = None
+    for i in range(3):
+        try:
+            req = Request(url, headers=UA)
+            with urlopen(req, timeout=35) as r:
+                data = r.read().decode("utf-8", "ignore")
+            _pav_429_count = 0
+            _pav_gap_s = max(2.0, _pav_gap_s * 0.95)
+            return data
+        except HTTPError as e:
+            last = e
+            if e.code == 429:
+                _pav_429_count += 1
+                _pav_gap_s = min(6.0, _pav_gap_s + 1.0)
+                wait = min(18.0, 6.0 + 4.0 * i)
+                emit_progress(
+                    f"Pavlínek 429 ({_pav_429_count}) — pauza {wait:.0f}s, další gap {_pav_gap_s:.1f}s"
+                )
+                time.sleep(wait)
+                continue
+            time.sleep(1.0 * (i + 1))
+        except Exception as e:
+            last = e
+            time.sleep(1.0 * (i + 1))
+    raise last  # type: ignore
 
 
 def parse_price(s: str) -> float | None:
@@ -795,9 +828,11 @@ def parse_pavlinek_collection(handle: str, type_slug: str) -> list[dict]:
 
 
 def scrape_pavlinek(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
-    """Sequential scrape (Shopify rate-limits parallel bursts). Returns (rows, failed)."""
-    global _pav_seen_ids
+    """Sequential scrape (Shopify rate-limits bursts). Returns (rows, failed)."""
+    global _pav_seen_ids, _pav_gap_s, _pav_429_count
     _pav_seen_ids = set()
+    _pav_gap_s = 2.2
+    _pav_429_count = 0
     entries = [
         e for e in (cmap.get("pavlinek") or []) if e.get("handle") and e.get("typeSlug")
     ]
@@ -805,7 +840,7 @@ def scrape_pavlinek(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
         return [], set()
     all_rows: list[dict] = []
     failed: set[tuple[str, str]] = set()
-    # One worker — parallel 4× collections triggered HTTP 429 from Shopify.
+    emit_progress(f"Pavlínek: {len(entries)} kolekcí, ~{_pav_gap_s:.1f}s mezi requesty (Shopify limit)")
     for i, e in enumerate(entries, 1):
         slug, handle = e["typeSlug"], e["handle"]
         try:
@@ -814,8 +849,10 @@ def scrape_pavlinek(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
             all_rows.extend(rows)
         except Exception as err:
             failed.add(("Pavlínek", slug))
-            emit_progress(f"Pavlínek ERR {slug}/{handle}: {err}")
-        time.sleep(0.4)
+            emit_progress(f"Pavlínek SKIP {slug}/{handle}: {err} (ponechám staré položky typu)")
+            # Cool down harder after a hard fail so the next collection has a chance.
+            _pav_gap_s = min(6.0, _pav_gap_s + 1.5)
+            time.sleep(3.0)
     return all_rows, failed
 
 
