@@ -378,7 +378,7 @@ export function createChatHandler(env: Record<string, string | undefined>, data?
     return { text, calls }
   }
 
-  async function status(req: IncomingMessage, res: ServerResponse) {
+  async function status(_req: IncomingMessage, res: ServerResponse) {
     const ollamaOk = await ollamaAvailable()
     const models = [
       {

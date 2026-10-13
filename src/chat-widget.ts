@@ -127,7 +127,8 @@ let historyKey = HISTORY_KEY
 
 export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
   // Katalog příslušenství Kapitána neukazuje.
-  return
+  let showCaptain = false
+  if (!showCaptain) return
   if (host.userId) {
     historyKey = `${HISTORY_KEY}:${host.userId}`
     try {
@@ -311,12 +312,6 @@ export function mountChatWidget(apiFetch: ApiFetch, host: ChatHost = {}) {
     sendBtn.disabled = v
     resetBtn.hidden = !messages.length || v
     panel.classList.toggle('is-loading', v)
-  }
-
-  function showNotice(text: string | null) {
-    notice.replaceChildren()
-    if (text) notice.append(el('span', '', text))
-    notice.hidden = !text
   }
 
   function open() {
