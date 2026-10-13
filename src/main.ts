@@ -980,69 +980,52 @@ function suppliersAllOn(): boolean {
   )
 }
 
-function supplierFilterHtml(counts: Map<string, number>): string {
+function supplierFilterHtml(_counts: Map<string, number>): string {
   const disabled = viewMode === 'quote'
-  const list = allCatalogSuppliers.length
-    ? allCatalogSuppliers
-    : [...counts.keys()].filter((s) => s !== 'tržní odhad').sort((a, b) => a.localeCompare(b, 'cs'))
-  return list
+  const list = allCatalogSuppliers.length ? allCatalogSuppliers : []
+  const subset = suppliersFilterReady && !suppliersAllOn()
+  const chips = list
     .map((s) => {
       const active = selectedSuppliers.has(s)
-      const count = counts.has(s) ? `<span class="legend-n">${counts.get(s)}</span>` : ''
+      const showX = subset && active
       const title = disabled
         ? 'Filtr dodavatele platí pro katalog'
         : active
-          ? `Vypnout: ${s}`
-          : `Zapnout: ${s}`
-      return `<button type="button" class="sup-filter-btn ${active ? 'active' : 'off'}" data-supplier-filter="${escapeAttr(s)}" aria-pressed="${active}" ${disabled ? 'disabled' : ''} title="${escapeAttr(title)}">
-      <span class="sup-badge lg sup-${supplierKey(s)}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(s)}</span>${count}
+          ? `Odebrat filtr: ${s}`
+          : `Filtrovat: ${s}`
+      return `<button type="button" class="mfr-chip sup-${supplierKey(s)} ${active ? 'on' : 'off'}" data-supplier-filter="${escapeAttr(s)}" aria-pressed="${active}" ${disabled ? 'disabled' : ''} title="${escapeAttr(title)}">
+      <span class="mfr-chip-label">${escapeHtml(s)}</span>${showX ? `<span class="mfr-chip-x" aria-hidden="true">×</span>` : ''}
     </button>`
     })
     .join('')
+  const showClear =
+    suppliersFilterReady &&
+    (subset || (viewMode === 'browse' && !!selectedSlug && selectedSlug !== ALL_SLUG))
+  return `<div class="filter-mfr">
+    <span class="filter-label">Výrobce</span>
+    <div class="mfr-chips" role="group" aria-label="Filtrovat podle dodavatele">${chips}</div>
+    ${showClear ? `<button type="button" class="link-btn filter-clear-all" data-action="clear-filters">Vymazat vše</button>` : ''}
+  </div>`
 }
 
 function sortControlHtml(): string {
   const disabled = viewMode === 'quote'
-  return `<div class="sort-segment" role="group" aria-label="Řazení podle ceny">
-    <button type="button" class="sort-seg-btn ${sortOrder === 'price_asc' ? 'active' : ''}" data-sort-set="price_asc" aria-pressed="${sortOrder === 'price_asc'}" ${disabled ? 'disabled' : ''}>Nejlevnější</button>
-    <button type="button" class="sort-seg-btn ${sortOrder === 'price_desc' ? 'active' : ''}" data-sort-set="price_desc" aria-pressed="${sortOrder === 'price_desc'}" ${disabled ? 'disabled' : ''}>Nejdražší</button>
-  </div>`
+  return `<label class="sort-field">
+    <span class="filter-label">Seřadit podle</span>
+    <select class="sort-select-mock" data-sort aria-label="Řazení podle ceny" ${disabled ? 'disabled' : ''}>
+      <option value="price_asc" ${sortOrder === 'price_asc' ? 'selected' : ''}>Cena: vzestupně</option>
+      <option value="price_desc" ${sortOrder === 'price_desc' ? 'selected' : ''}>Cena: sestupně</option>
+    </select>
+  </label>`
 }
 
-function activeFiltersHtml(): string {
-  if (viewMode === 'quote') return ''
-  const pills: string[] = []
+function categoryFilterChipHtml(): string {
   const t = currentType()
-  const hasCategory = viewMode === 'browse' && selectedSlug && selectedSlug !== ALL_SLUG && t
-  if (hasCategory) {
-    pills.push(
-      `<button type="button" class="filter-pill" data-action="clear-category" title="Zrušit filtr kategorie">
-        <span class="filter-pill-k">Kategorie</span>
-        <span class="filter-pill-v">${escapeHtml(t!.name)}</span>
-        <span class="filter-pill-x" aria-hidden="true">×</span>
-      </button>`
-    )
-  }
-  const supplierSubset =
-    suppliersFilterReady &&
-    selectedSuppliers.size > 0 &&
-    !suppliersAllOn()
-  if (supplierSubset) {
-    for (const s of [...selectedSuppliers].sort((a, b) => a.localeCompare(b, 'cs'))) {
-      pills.push(
-        `<button type="button" class="filter-pill filter-pill-sup sup-${supplierKey(s)}" data-clear-supplier="${escapeAttr(s)}" title="Vypnout ${escapeAttr(s)}">
-          <span class="filter-pill-k">Výrobce</span>
-          <span class="filter-pill-v">${escapeHtml(s)}</span>
-          <span class="filter-pill-x" aria-hidden="true">×</span>
-        </button>`
-      )
-    }
-  }
-  if (!pills.length) return ''
-  return `<div class="active-filters" role="list" aria-label="Aktivní filtry">
-    ${pills.join('')}
-    <button type="button" class="link-btn active-filters-clear" data-action="clear-filters">Zrušit filtry</button>
-  </div>`
+  if (viewMode !== 'browse' || !selectedSlug || selectedSlug === ALL_SLUG || !t) return ''
+  return `<button type="button" class="mfr-chip cat-chip on" data-action="clear-category" title="Zrušit filtr kategorie">
+    <span class="mfr-chip-label">${escapeHtml(t.name)}</span>
+    <span class="mfr-chip-x" aria-hidden="true">×</span>
+  </button>`
 }
 
 function clearCatalogFilters() {
@@ -1222,19 +1205,41 @@ function showCategoryOnCards(): boolean {
   return viewMode === 'search' || selectedSlug === ALL_SLUG
 }
 
+function productSpecLines(p: Product): string[] {
+  const lines: string[] = []
+  if (showCategoryOnCards()) {
+    const cat = typeName(p.typeSlug)
+    if (cat) lines.push(cat)
+  }
+  if (p.dimensions) lines.push(p.dimensions)
+  if (p.note) lines.push(p.note)
+  return lines.slice(0, 3)
+}
+
 function productCardHtml(p: Product): string {
   const qty = cart[p.id] || 0
+  const specs = productSpecLines(p)
   return `
     <article class="product-card ${qty ? 'in-quote' : ''}">
-      <div class="thumb">${thumbHtml(p)}</div>
+      <div class="thumb">
+        ${thumbHtml(p)}
+        <span class="thumb-sup sup-${supplierKey(p.supplier)}">${escapeHtml(p.supplier)}</span>
+      </div>
       <div class="product-body">
-        <div class="product-meta-top">${supplierBadge(p.supplier)}${p.sku ? `<span class="sku">${escapeHtml(p.sku)}</span>` : ''}</div>
-        ${showCategoryOnCards() ? `<div class="product-cat">${escapeHtml(typeName(p.typeSlug))}</div>` : ''}
         <div class="product-name">${escapeHtml(p.name)}</div>
-        ${p.dimensions ? `<div class="product-dims">${escapeHtml(p.dimensions)}</div>` : ''}
-        <div class="product-price">
-          <div>${dualPrice(p.price, p.priceVat)} <span class="muted">/ ${escapeHtml(p.unit)}</span></div>
-          <button type="button" class="link-btn history-link" data-history="${escapeAttr(p.id)}" aria-expanded="${historyOpenId === p.id}">Historie cen</button>
+        ${p.sku ? `<div class="sku">${escapeHtml(p.sku)}</div>` : ''}
+        ${
+          specs.length
+            ? `<ul class="product-specs">${specs.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ul>`
+            : ''
+        }
+        <div class="product-price-row">
+          <div class="product-price-block">
+            <strong>${formatCzk(p.price)}</strong>
+            <span class="muted">bez DPH</span>
+            <span class="muted price-vat">${formatCzk(p.priceVat)} s DPH / ${escapeHtml(p.unit)}</span>
+          </div>
+          <button type="button" class="link-btn history-link" data-history="${escapeAttr(p.id)}" aria-expanded="${historyOpenId === p.id}">Historie</button>
         </div>
         <div class="product-actions">
           ${
@@ -1246,9 +1251,8 @@ function productCardHtml(p: Product): string {
                   <input type="number" min="0" value="${qty}" aria-label="Množství" />
                   <button type="button" data-inc aria-label="Zvýšit">+</button>
                 </div>`
-              : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}" aria-label="Přidat do nabídky"><span class="btn-label-full">Přidat do nabídky</span><span class="btn-label-short">Přidat</span></button>`
+              : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}" aria-label="Přidat do nabídky"><span class="btn-label-full">Přidat</span><span class="btn-label-short">Přidat</span></button>`
           }
-          <span class="spacer"></span>
           ${
             p.productUrl
               ? `<a class="link-btn" href="${escapeAttr(p.productUrl)}" target="_blank" rel="noopener noreferrer">Detail ↗</a>`
@@ -1422,15 +1426,19 @@ app.innerHTML = `
       </a>
       <div class="header-search">
         <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <input class="search" type="search" placeholder="Hledat v katalogu…" aria-label="Hledat produkty" data-global-search />
+        <input class="search" type="search" placeholder="Hledat podle názvu, čísla dílu nebo specifikace…" aria-label="Hledat produkty" data-global-search />
       </div>
       <div class="header-actions" data-region="header-actions"></div>
     </header>
     <div class="body-row">
       <aside class="sidebar">
         <nav class="nav" aria-label="Kategorie" data-region="nav"></nav>
-        <div class="sidebar-foot" data-region="sidebar-foot" hidden>
-          <div class="status tiny" data-region="status"></div>
+        <div class="sidebar-foot">
+          <div class="sidebar-meta">
+            <strong>ContSystem · Katalog</strong>
+            Příslušenství dodavatelů
+          </div>
+          <div class="status tiny" data-region="status" hidden></div>
         </div>
       </aside>
       <div class="main-col">
@@ -1516,10 +1524,9 @@ function renderNav() {
     }
   }
   const st = region('status')
-  const foot = region('sidebar-foot')
   st.textContent = statusError ? statusText : ''
   st.classList.toggle('error', statusError)
-  foot.hidden = !statusError
+  st.hidden = !statusError
 }
 
 function renderNotices() {
@@ -1654,18 +1661,21 @@ function renderMain() {
   main.innerHTML = `
     <div class="content-head">
       <div>
-        ${isAll ? `<div class="crumb">Celý katalog</div>` : viewMode === 'browse' && t ? `<div class="crumb">${escapeHtml(t.category)}</div>` : viewMode === 'search' ? `<div class="crumb">Hledání</div>` : ''}
         <h1>${escapeHtml(heading)}</h1>
-        <p class="lead">${lead}</p>
+        <p class="lead">${
+          viewMode === 'browse' && t && !isAll
+            ? `Katalog ${escapeHtml(t.category)} · ${lead}`
+            : lead
+        }</p>
       </div>
     </div>
     <div class="filter-bar">
-      <div class="supplier-legend" role="group" aria-label="Filtrovat podle dodavatele">
+      <div class="filter-bar-left">
+        ${categoryFilterChipHtml()}
         ${supplierFilterHtml(supplierCounts)}
       </div>
       ${sortControlHtml()}
     </div>
-    ${activeFiltersHtml()}
     ${relatedStripHtml()}
     <div class="product-grid">
       ${
