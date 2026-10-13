@@ -191,9 +191,10 @@ let searchTimer: number | undefined
 let updateStatus: CatalogUpdateStatus | null = null
 /** Dev-only overlay while scrape+seed runs. */
 let updateModalOpen = false
-/** Modal open before POST — user can skip Pavlínek / cancel. */
+/** Modal open before POST — user picks suppliers / cancel. */
 let updateAwaitingConfirm = false
-let updateSkipPavlinek = false
+const UPDATE_SUPPLIER_OPTIONS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek'] as const
+let updateSelectedSuppliers: string[] = [...UPDATE_SUPPLIER_OPTIONS]
 let updatePolling: number | undefined
 let toastMsg = ''
 let catalogInfoOpen = false
@@ -588,6 +589,16 @@ function updateElapsed(startedAt: string | null, finishedAt: string | null): str
 function updateModalHtml(): string {
   if (!updateModalOpen) return ''
   if (updateAwaitingConfirm) {
+    const boxes = UPDATE_SUPPLIER_OPTIONS.map((name) => {
+      const checked = updateSelectedSuppliers.includes(name)
+      const hint =
+        name === 'Pavlínek' ? ' · Shopify, pomalé / 429' : name === 'Hydrotruck' ? ' · občas SSL' : ''
+      return `<label class="upd-supplier-opt">
+        <input type="checkbox" data-update-supplier="${escapeAttr(name)}" ${checked ? 'checked' : ''} />
+        <span class="sup-badge lg sup-${supplierKey(name)}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(name)}</span>
+        <span class="upd-supplier-hint">${escapeHtml(hint)}</span>
+      </label>`
+    }).join('')
     return `
     <div class="upd-modal-root" role="dialog" aria-modal="true" aria-labelledby="upd-modal-title" data-update-modal>
       <div class="upd-modal-backdrop" data-action="close-update-modal"></div>
@@ -599,15 +610,19 @@ function updateModalHtml(): string {
             </span>
             <div>
               <h2 id="upd-modal-title">Aktualizovat katalog</h2>
-              <p class="upd-modal-sub">Scrape dodavatelů + zápis do Appwrite. Pavlínek (Shopify) je pomalý a často vrací 429 — při problémech ho přeskočte.</p>
+              <p class="upd-modal-sub">Vyberte dodavatele ke scrapu. Nezaškrtnutí zůstanou z poslední aktualizace.</p>
             </div>
           </div>
           <button type="button" class="upd-modal-close" data-action="close-update-modal" aria-label="Zavřít">×</button>
         </header>
-        <label class="upd-option">
-          <input type="checkbox" data-skip-pavlinek ${updateSkipPavlinek ? 'checked' : ''} />
-          <span><strong>Přeskočit Pavlínek</strong> — nechá poslední známé položky, aktualizuje ALSAP / TT / Hydrotruck</span>
-        </label>
+        <div class="upd-supplier-list" role="group" aria-label="Dodavatelé">
+          ${boxes}
+        </div>
+        <div class="upd-quick-row">
+          <button type="button" class="link-btn" data-action="update-suppliers-all">Všichni</button>
+          <button type="button" class="link-btn" data-action="update-suppliers-pavlinek">Jen Pavlínek</button>
+          <button type="button" class="link-btn" data-action="update-suppliers-no-pav">Bez Pavlínek</button>
+        </div>
         <footer class="upd-modal-foot">
           <button type="button" class="btn btn-ghost" data-action="close-update-modal">Zrušit</button>
           <button type="button" class="btn btn-primary" data-action="confirm-update-catalog">Spustit aktualizaci</button>
@@ -746,10 +761,28 @@ function renderUpdateModal() {
   if (log) log.scrollTop = log.scrollHeight
 }
 
+function loadSavedUpdateSuppliers(): string[] {
+  try {
+    const raw = localStorage.getItem('acc-db-update-suppliers')
+    if (!raw) return [...UPDATE_SUPPLIER_OPTIONS]
+    const parsed = JSON.parse(raw) as string[]
+    const allowed = new Set<string>(UPDATE_SUPPLIER_OPTIONS)
+    const next = parsed.filter((s) => allowed.has(s))
+    return next.length ? next : [...UPDATE_SUPPLIER_OPTIONS]
+  } catch {
+    return [...UPDATE_SUPPLIER_OPTIONS]
+  }
+}
+
+function readUpdateSupplierChecks(): string[] {
+  const boxes = [...app.querySelectorAll<HTMLInputElement>('[data-update-supplier]')]
+  return boxes.filter((b) => b.checked).map((b) => b.dataset.updateSupplier || '').filter(Boolean)
+}
+
 function openUpdateConfirm() {
   updateModalOpen = true
   updateAwaitingConfirm = true
-  updateSkipPavlinek = localStorage.getItem('acc-db-skip-pavlinek') === '1'
+  updateSelectedSuppliers = loadSavedUpdateSuppliers()
   renderUpdateModal()
 }
 
@@ -777,15 +810,14 @@ async function triggerUpdate() {
     phase: 'starting',
     startedAt: new Date().toISOString(),
     finishedAt: null,
-    logs: [
-      updateSkipPavlinek ? 'Připravuji aktualizaci (bez Pavlínek)…' : 'Připravuji aktualizaci…',
-    ],
+    logs: [`Připravuji aktualizaci (${updateSelectedSuppliers.join(', ') || 'nikdo'})…`],
     error: null,
     counts: null,
     seed: null,
   }
   render()
   try {
+    if (!updateSelectedSuppliers.length) throw new Error('Vyberte alespoň jednoho dodavatele')
     const headers = await updateAuthHeaders()
     if (!headers) {
       updateModalOpen = false
@@ -796,7 +828,7 @@ async function triggerUpdate() {
     const res = await apiFetch(`/catalog/update`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ skipPavlinek: updateSkipPavlinek }),
+      body: JSON.stringify({ suppliers: updateSelectedSuppliers }),
     })
     const data = await res.json()
     if (res.status === 401) {
@@ -1670,12 +1702,26 @@ app.addEventListener('click', (e) => {
       break
     case 'confirm-update-catalog':
       if (!isCatalogDev()) break
-      {
-        const skip = app.querySelector<HTMLInputElement>('[data-skip-pavlinek]')
-        updateSkipPavlinek = !!skip?.checked
-        localStorage.setItem('acc-db-skip-pavlinek', updateSkipPavlinek ? '1' : '0')
+      updateSelectedSuppliers = readUpdateSupplierChecks()
+      localStorage.setItem('acc-db-update-suppliers', JSON.stringify(updateSelectedSuppliers))
+      if (!updateSelectedSuppliers.length) {
+        toastMsg = 'Vyberte alespoň jednoho dodavatele'
+        render()
+        break
       }
       void triggerUpdate()
+      break
+    case 'update-suppliers-all':
+      updateSelectedSuppliers = [...UPDATE_SUPPLIER_OPTIONS]
+      renderUpdateModal()
+      break
+    case 'update-suppliers-pavlinek':
+      updateSelectedSuppliers = ['Pavlínek']
+      renderUpdateModal()
+      break
+    case 'update-suppliers-no-pav':
+      updateSelectedSuppliers = UPDATE_SUPPLIER_OPTIONS.filter((s) => s !== 'Pavlínek')
+      renderUpdateModal()
       break
     case 'stop-update-catalog':
       if (!isCatalogDev()) break

@@ -428,14 +428,18 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
           return
         }
         const body = await readBody(req)
+        let suppliers: string[] | undefined
         let skipPavlinek = false
         try {
-          const parsed = body ? (JSON.parse(body) as { skipPavlinek?: boolean }) : null
+          const parsed = body
+            ? (JSON.parse(body) as { suppliers?: string[]; skipPavlinek?: boolean })
+            : null
+          if (Array.isArray(parsed?.suppliers)) suppliers = parsed.suppliers.map(String)
           skipPavlinek = !!parsed?.skipPavlinek
         } catch {
           /* empty / non-JSON body */
         }
-        const result = startCatalogUpdate({ skipPavlinek })
+        const result = startCatalogUpdate({ suppliers, skipPavlinek })
         json(res, result.started ? 202 : 200, result)
         return
       }

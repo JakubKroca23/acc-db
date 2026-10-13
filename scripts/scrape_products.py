@@ -896,6 +896,40 @@ def expand_alsap_variants(items: list[dict]) -> list[dict]:
     return rest + out
 
 
+def scrape_enabled_suppliers() -> set[str]:
+    """SCRAPE_SUPPLIERS=ALSAP,Pavlínek (comma) or SKIP_PAVLINEK=1 legacy. Empty = all."""
+    all_sup = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek"}
+    raw = (os.environ.get("SCRAPE_SUPPLIERS") or "").strip()
+    if raw:
+        aliases = {
+            "alsap": "ALSAP",
+            "tt": "Trans-Technik",
+            "trans": "Trans-Technik",
+            "trans-technik": "Trans-Technik",
+            "transtechnik": "Trans-Technik",
+            "ht": "Hydrotruck",
+            "hydro": "Hydrotruck",
+            "hydrotruck": "Hydrotruck",
+            "pav": "Pavlínek",
+            "pavlinek": "Pavlínek",
+            "pavlínek": "Pavlínek",
+        }
+        out: set[str] = set()
+        for part in raw.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            key = token.casefold()
+            if key in aliases:
+                out.add(aliases[key])
+            elif token in all_sup:
+                out.add(token)
+        return out or set(all_sup)
+    if os.environ.get("SKIP_PAVLINEK") == "1":
+        return all_sup - {"Pavlínek"}
+    return set(all_sup)
+
+
 def main() -> None:
     if os.environ.get("EXPAND_ALSAP_ONLY") == "1" and OUT.exists():
         items = json.loads(OUT.read_text(encoding="utf-8"))
@@ -906,87 +940,99 @@ def main() -> None:
         emit_progress(f"wrote {OUT}")
         return
 
+    enabled = scrape_enabled_suppliers()
+    emit_progress(f"Scrape dodavatelé: {', '.join(sorted(enabled))}")
+
     cmap = load_map()
     all_items: list[dict] = []
     failed: set[tuple[str, str]] = set()  # (supplier, typeSlug) with a failed source page
 
     # ALSAP
-    emit_progress("=== ALSAP ===")
-    alsap_jobs: list[tuple[str, str]] = []
-    for entry in cmap.get("alsap", []):
-        slug, url = entry["typeSlug"], entry["url"]
-        for page in alsap_pages(url, max_pages=15):
-            alsap_jobs.append((slug, page))
+    if "ALSAP" in enabled:
+        emit_progress("=== ALSAP ===")
+        alsap_jobs: list[tuple[str, str]] = []
+        for entry in cmap.get("alsap", []):
+            slug, url = entry["typeSlug"], entry["url"]
+            for page in alsap_pages(url, max_pages=15):
+                alsap_jobs.append((slug, page))
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(parse_alsap_list, u, s): (s, u) for s, u in alsap_jobs}
-        for fut in as_completed(futs):
-            s, u = futs[fut]
-            try:
-                ps = fut.result()
-                emit_progress(f"ALSAP {s}: {len(ps)}  {u.split('/')[-2] if '/?f=' in u or u.endswith('/') else u[-40:]}")
-                all_items.extend(ps)
-            except Exception as e:
-                failed.add(("ALSAP", s))
-                emit_progress(f"ALSAP ERR {s}: {e}")
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = {ex.submit(parse_alsap_list, u, s): (s, u) for s, u in alsap_jobs}
+            for fut in as_completed(futs):
+                s, u = futs[fut]
+                try:
+                    ps = fut.result()
+                    emit_progress(f"ALSAP {s}: {len(ps)}  {u.split('/')[-2] if '/?f=' in u or u.endswith('/') else u[-40:]}")
+                    all_items.extend(ps)
+                except Exception as e:
+                    failed.add(("ALSAP", s))
+                    emit_progress(f"ALSAP ERR {s}: {e}")
 
-    all_items = expand_alsap_variants(all_items)
+        all_items = expand_alsap_variants(all_items)
+    else:
+        emit_progress("=== ALSAP přeskočen ===")
 
     # Trans-Technik
-    emit_progress("=== Trans-Technik ===")
-    tt_pages: list[tuple[str, str]] = []
-    for entry in cmap.get("transTechnik", []):
-        slug, root = entry["typeSlug"], entry["url"]
-        try:
-            leaves = tt_discover_leaves(root, slug)
-            emit_progress(f"TT discover {slug}: {len(leaves)} pages from {root.split('/')[-1]}")
-            tt_pages.extend(leaves)
-        except Exception as e:
-            emit_progress(f"TT discover ERR {slug}: {e}")
-            tt_pages.append((slug, root))
-
-    seen_pages: set[str] = set()
-    unique_tt: list[tuple[str, str]] = []
-    for s, u in tt_pages:
-        if u in seen_pages:
-            continue
-        seen_pages.add(u)
-        unique_tt.append((s, u))
-
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(parse_tt_list, u, s): (s, u) for s, u in unique_tt}
-        for fut in as_completed(futs):
-            s, u = futs[fut]
+    if "Trans-Technik" in enabled:
+        emit_progress("=== Trans-Technik ===")
+        tt_pages: list[tuple[str, str]] = []
+        for entry in cmap.get("transTechnik", []):
+            slug, root = entry["typeSlug"], entry["url"]
             try:
-                ps = fut.result()
-                if ps:
-                    emit_progress(f"TT {s}: {len(ps)}  {u.split('/')[-1][:55]}")
-                all_items.extend(ps)
+                leaves = tt_discover_leaves(root, slug)
+                emit_progress(f"TT discover {slug}: {len(leaves)} pages from {root.split('/')[-1]}")
+                tt_pages.extend(leaves)
             except Exception as e:
-                failed.add(("Trans-Technik", s))
-                emit_progress(f"TT ERR {s}: {e}")
+                emit_progress(f"TT discover ERR {slug}: {e}")
+                tt_pages.append((slug, root))
+
+        seen_pages: set[str] = set()
+        unique_tt: list[tuple[str, str]] = []
+        for s, u in tt_pages:
+            if u in seen_pages:
+                continue
+            seen_pages.add(u)
+            unique_tt.append((s, u))
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            futs = {ex.submit(parse_tt_list, u, s): (s, u) for s, u in unique_tt}
+            for fut in as_completed(futs):
+                s, u = futs[fut]
+                try:
+                    ps = fut.result()
+                    if ps:
+                        emit_progress(f"TT {s}: {len(ps)}  {u.split('/')[-1][:55]}")
+                    all_items.extend(ps)
+                except Exception as e:
+                    failed.add(("Trans-Technik", s))
+                    emit_progress(f"TT ERR {s}: {e}")
+    else:
+        emit_progress("=== Trans-Technik přeskočen ===")
 
     # Hydrotruck (optional, keep if reachable)
-    emit_progress("=== Hydrotruck ===")
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        # maxPages (optional, per entry) caps huge listings — e.g. Hydrotruck pump
-        # categories have ~20 pages each; we deliberately keep only the first page(s).
-        futs = {
-            ex.submit(parse_ht_list, e["url"], e["typeSlug"], int(e.get("maxPages", 12))): (e["typeSlug"], e["url"])
-            for e in cmap.get("hydrotruck", [])
-        }
-        for fut in as_completed(futs):
-            s, u = futs[fut]
-            try:
-                ps = fut.result()
-                emit_progress(f"HT {s}: {len(ps)}  {u.split('/')[-1]}")
-                all_items.extend(ps)
-            except Exception as e:
-                failed.add(("Hydrotruck", s))
-                emit_progress(f"HT ERR {s}: {e}")
+    if "Hydrotruck" in enabled:
+        emit_progress("=== Hydrotruck ===")
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            # maxPages (optional, per entry) caps huge listings — e.g. Hydrotruck pump
+            # categories have ~20 pages each; we deliberately keep only the first page(s).
+            futs = {
+                ex.submit(parse_ht_list, e["url"], e["typeSlug"], int(e.get("maxPages", 12))): (e["typeSlug"], e["url"])
+                for e in cmap.get("hydrotruck", [])
+            }
+            for fut in as_completed(futs):
+                s, u = futs[fut]
+                try:
+                    ps = fut.result()
+                    emit_progress(f"HT {s}: {len(ps)}  {u.split('/')[-1]}")
+                    all_items.extend(ps)
+                except Exception as e:
+                    failed.add(("Hydrotruck", s))
+                    emit_progress(f"HT ERR {s}: {e}")
+    else:
+        emit_progress("=== Hydrotruck přeskočen ===")
 
     # Pavlínek (Shopify JSON) — sequential + 429 backoff (store rate-limits bursts)
-    if os.environ.get("SKIP_PAVLINEK") != "1":
+    if "Pavlínek" in enabled:
         emit_progress("=== Pavlínek ===")
         try:
             pav, pav_failed = scrape_pavlinek(cmap)
@@ -996,10 +1042,24 @@ def main() -> None:
         except Exception as e:
             failed.add(("Pavlínek", "*"))
             emit_progress(f"Pavlínek ERR: {e}")
+    else:
+        emit_progress("=== Pavlínek přeskočen ===")
 
-    # Manual / estimate fillers
-    all_items.extend(
-        [
+    # Keep last scrape for suppliers we did not run this time (partial update).
+    skipped = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek"} - enabled
+    if skipped and OUT.exists():
+        try:
+            prev = json.loads(OUT.read_text(encoding="utf-8"))
+        except Exception:
+            prev = []
+        kept = [p for p in prev if p.get("supplier") in skipped]
+        all_items.extend(kept)
+        emit_progress(f"ponecháno z minula: {len(kept)} položek ({', '.join(sorted(skipped))})")
+
+    # Manual / estimate fillers (only when that supplier is being scraped)
+    fillers: list[dict] = []
+    if "Hydrotruck" in enabled:
+        fillers.append(
             {
                 "name": "Hydraulický olej HLP 46 (orientační)",
                 "price": 78,
@@ -1011,7 +1071,10 @@ def main() -> None:
                 "typeSlug": "hydraulicky-olej",
                 "unit": "L",
                 "sku": None,
-            },
+            }
+        )
+    if "ALSAP" in enabled:
+        fillers.append(
             {
                 "name": "Hydraulický olej HM 46 (orientační)",
                 "price": 72,
@@ -1023,9 +1086,9 @@ def main() -> None:
                 "typeSlug": "hydraulicky-olej",
                 "unit": "L",
                 "sku": None,
-            },
-        ]
-    )
+            }
+        )
+    all_items.extend(fillers)
     # Fallback market estimates only when Hydrotruck pad scrape yielded nothing
     # (SSL/network issues from some hosts — run scrape from a network that can reach HT).
     if not any(p.get("typeSlug") == "podkladaci-desky" for p in all_items):

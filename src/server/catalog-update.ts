@@ -23,8 +23,22 @@ export type CatalogUpdateStatus = {
 }
 
 export type CatalogUpdateOptions = {
-  /** Skip Pavlínek Shopify scrape (keeps last known Pavlínek rows via seed carry-over). */
+  /** Which suppliers to scrape. Empty / omitted = all. Others keep last scrape. */
+  suppliers?: string[]
+  /** @deprecated use suppliers without Pavlínek */
   skipPavlinek?: boolean
+}
+
+const ALL_SUPPLIERS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek'] as const
+
+function resolveSuppliers(opts: CatalogUpdateOptions): string[] {
+  if (opts.suppliers?.length) {
+    const allowed = new Set(ALL_SUPPLIERS)
+    const picked = [...new Set(opts.suppliers.map((s) => s.trim()).filter((s) => allowed.has(s as (typeof ALL_SUPPLIERS)[number])))]
+    return picked.length ? picked : [...ALL_SUPPLIERS]
+  }
+  if (opts.skipPavlinek) return ALL_SUPPLIERS.filter((s) => s !== 'Pavlínek')
+  return [...ALL_SUPPLIERS]
 }
 
 const MAX_LOGS = 200
@@ -183,11 +197,13 @@ export function startCatalogUpdate(
     counts: null,
     seed: null,
   }
-  if (opts.skipPavlinek) pushLog('Volba: přeskočit Pavlínek (ponechat poslední scrape)')
+  const suppliers = resolveSuppliers(opts)
+  pushLog(`Volba dodavatelů: ${suppliers.join(', ')}`)
   saveStatus()
 
-  const scrapeEnv: Record<string, string> = {}
-  if (opts.skipPavlinek) scrapeEnv.SKIP_PAVLINEK = '1'
+  const scrapeEnv: Record<string, string> = {
+    SCRAPE_SUPPLIERS: suppliers.join(','),
+  }
 
   void (async () => {
     try {
