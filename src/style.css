@@ -128,9 +128,10 @@ h3 {
   top: 0;
   z-index: 30;
   height: var(--header-h);
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 14px;
+  column-gap: 14px;
   padding: 0 14px 0 16px;
   background: var(--titlebar);
   color: #fff;
@@ -140,11 +141,27 @@ h3 {
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   text-decoration: none;
   color: inherit;
   flex-shrink: 0;
-  min-width: calc(var(--sidebar-w) - 16px);
+  min-width: 0;
+  justify-self: start;
+}
+
+.brand-logo {
+  height: 24px;
+  width: auto;
+  display: block;
+  flex-shrink: 0;
+  filter: brightness(0) invert(1);
+}
+
+.brand-divider {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.22);
+  flex-shrink: 0;
 }
 
 .brand-app {
@@ -158,10 +175,10 @@ h3 {
 
 .header-search {
   position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 400px;
-  margin: 0 auto;
+  width: min(400px, 42vw);
+  min-width: 200px;
+  justify-self: center;
+  grid-column: 2;
 }
 
 .search-icon {
@@ -197,8 +214,9 @@ h3 {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
+  justify-self: end;
   flex-shrink: 0;
+  grid-column: 3;
 }
 
 .catalog-dev-actions {
@@ -627,6 +645,10 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
+.content-head > div {
+  min-width: 0;
+}
+
 .crumb {
   font-family: var(--font-sans);
   font-size: 10.5px;
@@ -648,11 +670,18 @@ textarea:focus {
   font-size: 13px;
 }
 
-.catalog-toolbar {
+.filter-bar {
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
 }
 
 .supplier-legend {
@@ -660,27 +689,123 @@ textarea:focus {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
-.sort-control {
+.sort-segment {
   display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--muted);
+}
+
+.sort-seg-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms, color 120ms;
+}
+
+.sort-seg-btn + .sort-seg-btn {
+  border-left: 1px solid var(--border-strong);
+}
+
+.sort-seg-btn:hover:not(:disabled):not(.active) {
+  background: rgba(24, 24, 27, 0.04);
+  color: var(--foreground);
+}
+
+.sort-seg-btn.active {
+  background: var(--brand-blue);
+  color: #fff;
+}
+
+.sort-seg-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.active-filters {
+  display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--foreground);
+  font-family: var(--font-sans);
   font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 120ms, background-color 120ms;
+}
+
+.filter-pill:hover {
+  border-color: rgba(0, 145, 255, 0.45);
+  background: var(--brand-blue-muted);
+}
+
+.filter-pill-k {
+  color: var(--muted-foreground);
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.filter-pill-k::after {
+  content: ':';
+}
+
+.filter-pill-x {
+  margin-left: 2px;
+  font-size: 15px;
+  line-height: 1;
   color: var(--muted-foreground);
 }
 
-.sort-control .sort-label {
-  font-weight: 600;
-  letter-spacing: 0.01em;
+.filter-pill:hover .filter-pill-x {
+  color: var(--brand-blue-ink);
 }
 
-.sort-control .sort-select {
-  height: 30px;
-  min-width: 138px;
-  padding: 0 28px 0 10px;
-  font-size: 12.5px;
+.filter-pill-sup.sup-alsap {
+  border-color: var(--sup-alsap-border);
+  background: var(--sup-alsap-bg);
+}
+.filter-pill-sup.sup-tt {
+  border-color: var(--sup-tt-border);
+  background: var(--sup-tt-bg);
+}
+.filter-pill-sup.sup-ht {
+  border-color: var(--sup-ht-border);
+  background: var(--sup-ht-bg);
+}
+.filter-pill-sup.sup-pav {
+  border-color: var(--sup-pav-border);
+  background: var(--sup-pav-bg);
+}
+
+.active-filters-clear {
+  margin-left: 2px;
+  font-weight: 650;
 }
 
 .sup-filter-btn {
@@ -1834,9 +1959,8 @@ textarea:focus {
   :root {
     --sidebar-w: 220px;
   }
-  .brand {
-    width: auto;
-    min-width: 0;
+  .brand-logo {
+    height: 22px;
   }
 }
 
@@ -1848,6 +1972,7 @@ textarea:focus {
     position: sticky;
     top: 0;
     z-index: 40;
+    display: flex;
     flex-wrap: wrap;
     gap: 8px;
     padding: 8px 10px;
@@ -1859,6 +1984,7 @@ textarea:focus {
   }
   .header-actions {
     order: 2;
+    grid-column: auto;
   }
   .app-header::before {
     content: '';
@@ -1869,8 +1995,12 @@ textarea:focus {
   .header-search {
     order: 4;
     flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
     max-width: none;
     margin: 0;
+    grid-column: auto;
+    justify-self: stretch;
   }
   .search {
     height: 40px;
@@ -1954,10 +2084,12 @@ textarea:focus {
   .lead {
     font-size: 12px;
   }
-  .catalog-toolbar {
+  .filter-bar {
     width: 100%;
+    flex-direction: column;
     align-items: stretch;
-    gap: 6px;
+    gap: 8px;
+    padding: 8px 10px;
   }
   .supplier-legend {
     justify-content: flex-start;
@@ -1980,15 +2112,25 @@ textarea:focus {
     font-size: 12px;
     padding: 0 9px;
   }
-  .sort-control {
-    justify-content: space-between;
+  .sort-segment {
     width: 100%;
   }
-  .sort-control .sort-select {
+  .sort-seg-btn {
     flex: 1;
-    min-width: 0;
     height: 36px;
-    font-size: 16px; /* iOS: avoid zoom on focus */
+    font-size: 14px;
+  }
+  .active-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .active-filters::-webkit-scrollbar {
+    display: none;
+  }
+  .filter-pill {
+    flex-shrink: 0;
   }
   /* Phone: no pinch / double-tap zoom, no sideways page scroll.
      Chip rows still pan sideways. */
@@ -2002,6 +2144,7 @@ textarea:focus {
   }
   .nav,
   .supplier-legend,
+  .active-filters,
   .related-chips {
     touch-action: pan-x;
   }
@@ -2195,6 +2338,12 @@ textarea:focus {
     font-size: 13px;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .brand-logo {
+    height: 18px;
+  }
+  .brand-divider {
+    height: 14px;
   }
   .brand {
     flex: 1 1 auto;

@@ -972,6 +972,14 @@ function supplierBadge(supplier: string, extra = ''): string {
   return `<span class="sup-badge sup-${supplierKey(supplier)} ${extra}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(supplier)}</span>`
 }
 
+function suppliersAllOn(): boolean {
+  return (
+    suppliersFilterReady &&
+    allCatalogSuppliers.length > 0 &&
+    allCatalogSuppliers.every((s) => selectedSuppliers.has(s))
+  )
+}
+
 function supplierFilterHtml(counts: Map<string, number>): string {
   const disabled = viewMode === 'quote'
   const list = allCatalogSuppliers.length
@@ -995,13 +1003,55 @@ function supplierFilterHtml(counts: Map<string, number>): string {
 
 function sortControlHtml(): string {
   const disabled = viewMode === 'quote'
-  return `<label class="sort-control">
-    <span class="sort-label">Cena</span>
-    <select class="select sort-select" data-sort aria-label="Řazení podle ceny" ${disabled ? 'disabled' : ''}>
-      <option value="price_asc" ${sortOrder === 'price_asc' ? 'selected' : ''}>↑ nejlevnější</option>
-      <option value="price_desc" ${sortOrder === 'price_desc' ? 'selected' : ''}>↓ nejdražší</option>
-    </select>
-  </label>`
+  return `<div class="sort-segment" role="group" aria-label="Řazení podle ceny">
+    <button type="button" class="sort-seg-btn ${sortOrder === 'price_asc' ? 'active' : ''}" data-sort-set="price_asc" aria-pressed="${sortOrder === 'price_asc'}" ${disabled ? 'disabled' : ''}>Nejlevnější</button>
+    <button type="button" class="sort-seg-btn ${sortOrder === 'price_desc' ? 'active' : ''}" data-sort-set="price_desc" aria-pressed="${sortOrder === 'price_desc'}" ${disabled ? 'disabled' : ''}>Nejdražší</button>
+  </div>`
+}
+
+function activeFiltersHtml(): string {
+  if (viewMode === 'quote') return ''
+  const pills: string[] = []
+  const t = currentType()
+  const hasCategory = viewMode === 'browse' && selectedSlug && selectedSlug !== ALL_SLUG && t
+  if (hasCategory) {
+    pills.push(
+      `<button type="button" class="filter-pill" data-action="clear-category" title="Zrušit filtr kategorie">
+        <span class="filter-pill-k">Kategorie</span>
+        <span class="filter-pill-v">${escapeHtml(t!.name)}</span>
+        <span class="filter-pill-x" aria-hidden="true">×</span>
+      </button>`
+    )
+  }
+  const supplierSubset =
+    suppliersFilterReady &&
+    selectedSuppliers.size > 0 &&
+    !suppliersAllOn()
+  if (supplierSubset) {
+    for (const s of [...selectedSuppliers].sort((a, b) => a.localeCompare(b, 'cs'))) {
+      pills.push(
+        `<button type="button" class="filter-pill filter-pill-sup sup-${supplierKey(s)}" data-clear-supplier="${escapeAttr(s)}" title="Vypnout ${escapeAttr(s)}">
+          <span class="filter-pill-k">Výrobce</span>
+          <span class="filter-pill-v">${escapeHtml(s)}</span>
+          <span class="filter-pill-x" aria-hidden="true">×</span>
+        </button>`
+      )
+    }
+  }
+  if (!pills.length) return ''
+  return `<div class="active-filters" role="list" aria-label="Aktivní filtry">
+    ${pills.join('')}
+    <button type="button" class="link-btn active-filters-clear" data-action="clear-filters">Zrušit filtry</button>
+  </div>`
+}
+
+function clearCatalogFilters() {
+  selectAllSuppliers()
+  if (viewMode === 'browse' && selectedSlug && selectedSlug !== ALL_SLUG) {
+    selectType(ALL_SLUG)
+    return
+  }
+  void loadProductsForCurrent()
 }
 
 /** All supplier thumbnails go through our own origin (cache, allowlist, jpg→webp repair). */
@@ -1366,6 +1416,8 @@ app.innerHTML = `
   <div class="shell">
     <header class="app-header">
       <a class="brand" href="${BASE}">
+        <img class="brand-logo" src="${BASE}contsystem-logo.svg" alt="ContSystem" width="120" height="32" />
+        <span class="brand-divider" aria-hidden="true"></span>
         <span class="brand-app">Katalog příslušenství</span>
       </a>
       <div class="header-search">
@@ -1527,6 +1579,28 @@ function closePickWindow() {
   }
 }
 
+/** Manager zrušil úpravu příslušenství → zavřít toto pick okno. */
+function onPickDismissMessage(data: { type?: string; token?: string } | null) {
+  if (!pickMode || !pickToken) return
+  if (data?.type !== 'acc-db-pick-dismiss') return
+  if (!data.token || data.token !== pickToken) return
+  closePickWindow()
+}
+
+if (pickMode && pickToken) {
+  window.addEventListener('message', (event) => {
+    if (event.origin !== window.location.origin) return
+    onPickDismissMessage(event.data as { type?: string; token?: string } | null)
+  })
+  try {
+    const dismissCh = new BroadcastChannel(PICK_CHANNEL)
+    dismissCh.onmessage = (event) =>
+      onPickDismissMessage(event.data as { type?: string; token?: string } | null)
+  } catch {
+    /* BroadcastChannel unavailable */
+  }
+}
+
 function postPick(product: Product) {
   const item = {
     $id: product.id,
@@ -1565,30 +1639,33 @@ function renderMain() {
   const heading = viewMode === 'search' ? `Hledání: „${searchQ.trim() || '…'}“` : isAll ? 'Vše' : t?.name || 'Katalog'
   const supplierCounts = new Map<string, number>()
   for (const p of catalogItems) supplierCounts.set(p.supplier, (supplierCounts.get(p.supplier) || 0) + 1)
+  const lead =
+    suppliersFilterReady && selectedSuppliers.size === 0
+      ? 'Žádný dodavatel není zapnutý'
+      : catalogLoading
+        ? 'Načítám…'
+        : viewMode === 'search'
+          ? `${catalogItems.length} výsledků`
+          : isAll
+            ? `${catalogItems.length} položek ze všech ${types.length} kategorií`
+            : t
+              ? `${catalogItems.length} položek`
+              : ''
   main.innerHTML = `
     <div class="content-head">
       <div>
-        ${isAll ? `<div class="crumb">Celý katalog</div>` : viewMode === 'browse' && t ? `<div class="crumb">${escapeHtml(t.category)}</div>` : ''}
+        ${isAll ? `<div class="crumb">Celý katalog</div>` : viewMode === 'browse' && t ? `<div class="crumb">${escapeHtml(t.category)}</div>` : viewMode === 'search' ? `<div class="crumb">Hledání</div>` : ''}
         <h1>${escapeHtml(heading)}</h1>
-        <p class="lead">${
-          suppliersFilterReady && selectedSuppliers.size === 0
-            ? 'Žádný dodavatel není zapnutý'
-            : viewMode === 'search'
-              ? `${catalogItems.length} výsledků · cena ${sortOrder === 'price_desc' ? '↓' : '↑'}`
-              : isAll
-                ? `${catalogItems.length} položek ze všech ${types.length} kategorií · ${escapeHtml(supplierFilterLabel())} · cena ${sortOrder === 'price_desc' ? '↓' : '↑'}`
-                : t
-                  ? `${catalogItems.length} položek · cena ${sortOrder === 'price_desc' ? '↓' : '↑'}`
-                  : ''
-        }</p>
-      </div>
-      <div class="catalog-toolbar">
-        <div class="supplier-legend" role="group" aria-label="Filtrovat podle dodavatele">
-          ${supplierFilterHtml(supplierCounts)}
-        </div>
-        ${sortControlHtml()}
+        <p class="lead">${lead}</p>
       </div>
     </div>
+    <div class="filter-bar">
+      <div class="supplier-legend" role="group" aria-label="Filtrovat podle dodavatele">
+        ${supplierFilterHtml(supplierCounts)}
+      </div>
+      ${sortControlHtml()}
+    </div>
+    ${activeFiltersHtml()}
     ${relatedStripHtml()}
     <div class="product-grid">
       ${
@@ -1752,6 +1829,25 @@ app.addEventListener('click', (e) => {
     void loadProductsForCurrent()
     return
   }
+  const clearSupBtn = target.closest<HTMLElement>('[data-clear-supplier]')
+  if (clearSupBtn) {
+    const name = clearSupBtn.dataset.clearSupplier || ''
+    if (name) {
+      selectedSuppliers.delete(name)
+      void loadProductsForCurrent()
+    }
+    return
+  }
+  const sortBtn = target.closest<HTMLElement>('[data-sort-set]')
+  if (sortBtn && !sortBtn.hasAttribute('disabled')) {
+    const v = sortBtn.dataset.sortSet
+    const next = v === 'price_desc' ? 'price_desc' : 'price_asc'
+    if (next !== sortOrder) {
+      sortOrder = next
+      void loadProductsForCurrent()
+    }
+    return
+  }
   const pickBtn = target.closest<HTMLElement>('[data-pick]')
   if (pickBtn) {
     const id = pickBtn.dataset.pick!
@@ -1800,6 +1896,12 @@ app.addEventListener('click', (e) => {
       break
     case 'cancel-pick':
       cancelPick()
+      break
+    case 'clear-category':
+      selectType(ALL_SLUG)
+      break
+    case 'clear-filters':
+      clearCatalogFilters()
       break
     case 'update-catalog':
       if (!isCatalogDev()) break
