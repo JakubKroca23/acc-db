@@ -8,6 +8,7 @@ Fixes vs first version:
 - TT card prices are WITHOUT VAT (not with VAT)
 - Discover TT leaf pages that contain products (cards or tables)
 - Hydrotruck: ?str=PAGE pagination + insecure-SSL fallback; pad/holder reclassify
+- ALSAP product pages that are a size/option group (JSON-LD hasVariant) become one row per option
 """
 from __future__ import annotations
 
@@ -584,7 +585,152 @@ def emit_progress(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _alsap_ld_variants(html: str) -> list[dict]:
+    """Size/option rows from schema.org ProductGroup.hasVariant. Price there includes VAT."""
+    found: list[dict] = []
+    for m in re.finditer(
+        r"<script[^>]*type=['\"]application/ld\+json['\"][^>]*>(.*?)</script>",
+        html,
+        re.S | re.I,
+    ):
+        try:
+            data = json.loads(m.group(1))
+        except Exception:
+            continue
+        nodes = data if isinstance(data, list) else [data]
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            raw = node.get("hasVariant")
+            if isinstance(raw, dict):
+                raw = [raw]
+            if isinstance(raw, list):
+                found.extend(v for v in raw if isinstance(v, dict))
+    return found
+
+
+def _alsap_variant_row(parent: dict, variant: dict) -> dict | None:
+    offers = variant.get("offers") or {}
+    if isinstance(offers, list):
+        offers = offers[0] if offers else {}
+    if not isinstance(offers, dict):
+        return None
+    try:
+        amount = float(str(offers.get("price")).replace(",", ".").replace(" ", ""))
+    except (TypeError, ValueError):
+        return None
+    spec = offers.get("priceSpecification") or {}
+    if isinstance(spec, list):
+        spec = spec[0] if spec else {}
+    vat_included = True
+    if isinstance(spec, dict) and spec.get("valueAddedTaxIncluded") is False:
+        vat_included = False
+    if vat_included:
+        price_vat = round(amount, 2)
+        price = round(amount / VAT, 2)
+    else:
+        price = round(amount, 2)
+        price_vat = round(amount * VAT, 2)
+    name = norm(str(variant.get("name") or ""))
+    if not name:
+        return None
+    image = variant.get("image")
+    if isinstance(image, list):
+        image = image[0] if image else None
+    if isinstance(image, dict):
+        image = image.get("url") or image.get("contentUrl")
+    raw_url = str(variant.get("url") or "").strip()
+    if raw_url and not raw_url.startswith("http"):
+        raw_url = urljoin("https://www.alsap.cz", raw_url)
+    sku = norm(str(variant.get("sku") or "")) or None
+    unit = parent.get("unit") or "ks"
+    unit_text = ""
+    if isinstance(spec, dict):
+        qty = spec.get("referenceQuantity") or {}
+        if isinstance(qty, dict):
+            unit_text = str(qty.get("unitText") or "")
+    if unit_text.lower() in ("l", "litr", "litry"):
+        unit = "L"
+    return {
+        "name": name[:220],
+        "price": price,
+        "priceVat": price_vat,
+        "imageUrl": str(image).strip() if image else parent.get("imageUrl"),
+        "productUrl": raw_url or parent.get("productUrl"),
+        "dimensions": dims_from_text(name),
+        "supplier": "ALSAP",
+        "typeSlug": parent.get("typeSlug"),
+        "unit": unit,
+        "sku": sku,
+    }
+
+
+def _expand_one_alsap(parent: dict) -> list[dict]:
+    url = parent.get("productUrl")
+    if not url:
+        return [parent]
+    try:
+        html = get(url)
+    except Exception as e:
+        emit_progress(f"ALSAP variant ERR {url[-48:]}: {e}")
+        return [parent]
+    variants = _alsap_ld_variants(html)
+    if len(variants) < 2:
+        return [parent]
+    rows = [row for v in variants if (row := _alsap_variant_row(parent, v))]
+    return rows or [parent]
+
+
+def expand_alsap_variants(items: list[dict]) -> list[dict]:
+    """Replace ALSAP group cards (e.g. bedna „od 400 do 1000 mm“) with every option."""
+    if os.environ.get("SKIP_ALSAP_VARIANTS") == "1":
+        return items
+    parents: list[dict] = []
+    rest: list[dict] = []
+    seen_urls: set[str] = set()
+    for p in items:
+        url = p.get("productUrl") or ""
+        if p.get("supplier") == "ALSAP" and url.startswith("http"):
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            parents.append(p)
+        else:
+            rest.append(p)
+    if not parents:
+        return items
+    emit_progress(f"ALSAP variants: {len(parents)} product pages")
+    out: list[dict] = []
+    done = 0
+    split = 0
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = {ex.submit(_expand_one_alsap, p): p for p in parents}
+        for fut in as_completed(futs):
+            parent = futs[fut]
+            done += 1
+            try:
+                rows = fut.result()
+            except Exception as e:
+                emit_progress(f"ALSAP variant ERR {parent.get('name', '')[:40]}: {e}")
+                rows = [parent]
+            if len(rows) > 1:
+                split += 1
+            out.extend(rows)
+            if done % 25 == 0 or done == len(parents):
+                emit_progress(f"ALSAP variants {done}/{len(parents)} · groups split {split} · rows {len(out)}")
+    return rest + out
+
+
 def main() -> None:
+    if os.environ.get("EXPAND_ALSAP_ONLY") == "1" and OUT.exists():
+        items = json.loads(OUT.read_text(encoding="utf-8"))
+        emit_progress(f"EXPAND_ALSAP_ONLY from {len(items)} products")
+        final = [p for p in dedupe(expand_alsap_variants(items)) if p.get("typeSlug") != "zadni-zabrana"]
+        OUT.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
+        emit_progress(f"TOTAL {len(final)} {dict(Counter(p['supplier'] for p in final))}")
+        emit_progress(f"wrote {OUT}")
+        return
+
     cmap = load_map()
     all_items: list[dict] = []
     failed: set[tuple[str, str]] = set()  # (supplier, typeSlug) with a failed source page
@@ -608,6 +754,8 @@ def main() -> None:
             except Exception as e:
                 failed.add(("ALSAP", s))
                 emit_progress(f"ALSAP ERR {s}: {e}")
+
+    all_items = expand_alsap_variants(all_items)
 
     # Trans-Technik
     emit_progress("=== Trans-Technik ===")

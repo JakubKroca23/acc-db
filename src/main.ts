@@ -151,11 +151,28 @@ function slugFromHash(): string | null {
 // The quote („Cenová nabídka“) is a full-page view at #/nabidka (deep-linkable, browser Back returns to the catalog).
 const QUOTE_HASH = 'nabidka'
 
+const pageParams = new URLSearchParams(location.search)
+/** Opened from the order accessory row: pick one product and post it back. */
+const pickMode = pageParams.get('pick') === '1'
+const pickToken = pageParams.get('token') || ''
+
 let selectedSlug: string | null = slugFromHash() === QUOTE_HASH ? null : slugFromHash()
 let renderLimit = PAGE_SIZE
 let searchQ = ''
 let supplierFilter = ''
 let viewMode: 'browse' | 'search' | 'quote' = slugFromHash() === QUOTE_HASH ? 'quote' : 'browse'
+
+if (pickMode) {
+  const initialQ = (pageParams.get('q') || '').trim()
+  const initialSupplier = (pageParams.get('supplier') || '').trim()
+  if (initialQ) {
+    searchQ = initialQ
+    viewMode = 'search'
+    selectedSlug = null
+  }
+  if (initialSupplier) supplierFilter = initialSupplier
+  document.title = 'Vybrat příslušenství · ContSystem'
+}
 let priceHistoryCache: Record<string, PriceHistoryEntry[]> = {}
 let historyOpenId: string | null = null
 let cartHydrated = false
@@ -774,7 +791,9 @@ function productCardHtml(p: Product): string {
         </div>
         <div class="product-actions">
           ${
-            qty
+            pickMode
+              ? `<button class="btn btn-primary" type="button" data-pick="${escapeAttr(p.id)}">Vybrat</button>`
+              : qty
               ? `<div class="qty" data-qty="${escapeAttr(p.id)}">
                   <button type="button" data-dec aria-label="Snížit">−</button>
                   <input type="number" min="0" value="${qty}" aria-label="Množství" />
@@ -988,6 +1007,11 @@ function renderHeaderFilter() {
 }
 
 function renderHeaderActions() {
+  if (pickMode) {
+    region('header-actions').innerHTML = `
+      <span class="pick-header-label">Výběr do zakázky</span>`
+    return
+  }
   const lines = cartLines()
   const shipping = shippingForCart(lines)
   const totalEx = lines.reduce((a, l) => a + l.lineExVat, 0) + shipping.reduce((a, s) => a + s.shippingExVat, 0)
@@ -1045,7 +1069,37 @@ function renderNav() {
 }
 
 function renderNotices() {
-  region('notices').innerHTML = toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''
+  const banner = pickMode
+    ? `<div class="pick-banner" role="status">
+        <span>Vyberte položku tlačítkem <strong>Vybrat</strong>. Okno se zavře a popis se doplní do příslušenství zakázky. U ALSAP jsou jednotlivé rozměry a provedení samostatně.</span>
+        <button type="button" class="btn btn-outline" data-action="cancel-pick">Zavřít</button>
+      </div>`
+    : ''
+  const toast = toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''
+  region('notices').innerHTML = banner + toast
+}
+
+function postPick(product: Product) {
+  const item = {
+    $id: product.id,
+    supplier: product.supplier,
+    code: product.sku || '',
+    name: product.name,
+    url: product.productUrl || '',
+    image_url: product.imageUrl,
+    price: product.price,
+    price_vat: product.priceVat,
+    currency: 'CZK',
+    category: typeName(product.typeSlug) || null,
+  }
+  const payload = { type: 'acc-db-pick', token: pickToken, item }
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage(payload, window.location.origin)
+    window.close()
+    return
+  }
+  toastMsg = 'Tohle okno nebylo otevřené z příslušenství zakázky.'
+  renderNotices()
 }
 
 function renderMain() {
@@ -1228,6 +1282,13 @@ app.addEventListener('click', (e) => {
     void togglePriceHistory(historyBtn.dataset.history!)
     return
   }
+  const pickBtn = target.closest<HTMLElement>('[data-pick]')
+  if (pickBtn) {
+    const id = pickBtn.dataset.pick!
+    const product = catalogItems.find((p) => p.id === id) || productsById.get(id)
+    if (product) postPick(product)
+    return
+  }
   const addBtn = target.closest<HTMLElement>('[data-add]')
   if (addBtn) {
     const id = addBtn.dataset.add!
@@ -1266,6 +1327,9 @@ app.addEventListener('click', (e) => {
       break
     case 'print-quote':
       printQuote()
+      break
+    case 'cancel-pick':
+      window.close()
       break
     case 'update-catalog':
       if (!isCatalogDev()) break
@@ -1550,7 +1614,7 @@ function applyChatAction(a: ChatAction): { undo?: () => void } | void {
 // the chat starts once the user is known (its history is stored per user)
 let chatStarted = false
 function startChat() {
-  if (chatStarted) return
+  if (pickMode || chatStarted) return
   chatStarted = true
   mountChatWidget(apiFetch, { getContext: chatContext, getQuote: chatQuote, applyAction: applyChatAction, userId })
 }
