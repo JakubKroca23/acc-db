@@ -97,6 +97,51 @@ _PAV_HEADERS = {
 }
 
 
+def _pav_probe() -> tuple[bool, str]:
+    """Single light request — True if Shopify accepts this IP right now."""
+    from urllib.error import HTTPError
+
+    url = "https://www.pavlinek.cz/products.json?limit=1&page=1"
+    try:
+        req = Request(url, headers=_PAV_HEADERS)
+        with urlopen(req, timeout=25) as r:
+            r.read(80)
+        return True, "ok"
+    except HTTPError as e:
+        ra = e.headers.get("Retry-After") if e.headers else None
+        return False, f"HTTP {e.code}" + (f" Retry-After={ra}" if ra else "")
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _pav_wait_for_access(max_wait_s: float = 1200.0) -> bool:
+    """If IP is soft-banned (instant 429), sit until Shopify opens again."""
+    global _pav_gap_s
+    ok, detail = _pav_probe()
+    if ok:
+        emit_progress("Pavlínek: Shopify OK (IP není zablokovaná)")
+        return True
+    emit_progress(
+        f"Pavlínek: Shopify teď odmítá ({detail}) — dočasný limit IP, "
+        f"čekám až {max_wait_s / 60:.0f} min (neklikej Znovu)"
+    )
+    started = time.time()
+    attempt = 0
+    while time.time() - started < max_wait_s:
+        attempt += 1
+        wait = min(120.0, 30.0 + 15.0 * min(attempt, 6))
+        emit_progress(f"Pavlínek cooldown {attempt}: pauza {wait:.0f}s…")
+        time.sleep(wait)
+        ok, detail = _pav_probe()
+        if ok:
+            _pav_gap_s = 6.0
+            emit_progress("Pavlínek: přístup obnoven, pokračuju pomaleji (gap 6s)")
+            return True
+        emit_progress(f"Pavlínek: stále blok ({detail})")
+    emit_progress("Pavlínek: timeout — IP pořád v limitu, zkus za 15–30 min")
+    return False
+
+
 def get_pav(url: str, retries: int = 12) -> str:
     """Shopify storefront JSON — polite gap + long 429 cooldown (not 3× quick fail)."""
     global _pav_gap_s, _pav_429_streak
@@ -870,6 +915,9 @@ def scrape_pavlinek(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
     ]
     if not entries:
         return [], set()
+
+    if not _pav_wait_for_access():
+        return [], {("Pavlínek", e["typeSlug"]) for e in entries}
 
     emit_progress(
         f"Pavlínek: nejdřív celý katalog (/products.json), pak {len(entries)} kolekcí "
