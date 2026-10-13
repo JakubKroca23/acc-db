@@ -9,7 +9,7 @@ Fixes vs first version:
 - Discover TT leaf pages that contain products (cards or tables)
 - Hydrotruck: ?str=PAGE pagination + insecure-SSL fallback; pad/holder reclassify
 - ALSAP product pages that are a size/option group (JSON-LD hasVariant) become one row per option
-- Pavlínek: Shopify /collections/{handle}/products.json (prices ex VAT)
+- Pavlínek: /products.json dump + collection ID map; long 429 cooldown (prices ex VAT)
 """
 from __future__ import annotations
 
@@ -85,41 +85,56 @@ def get_ht(url: str) -> str:
         return get(url, insecure=True)
 
 
-# Pavlínek / Shopify: adaptive gap — grows after 429 so we don't hammer the storefront.
-_pav_gap_s = 2.2
-_pav_429_count = 0
+# Pavlínek / Shopify: storefront JSON is aggressively rate-limited.
+# Short 6–18s retries make it worse — wait long, keep gap high, many attempts.
+_pav_gap_s = 5.0
+_pav_429_streak = 0
+_PAV_HEADERS = {
+    **UA,
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.8",
+    "Referer": "https://www.pavlinek.cz/",
+}
 
 
-def get_pav(url: str) -> str:
-    """Shopify storefront JSON — slow sequential pacing, few short 429 retries then fail."""
-    global _pav_gap_s, _pav_429_count
+def get_pav(url: str, retries: int = 12) -> str:
+    """Shopify storefront JSON — polite gap + long 429 cooldown (not 3× quick fail)."""
+    global _pav_gap_s, _pav_429_streak
     from urllib.error import HTTPError
 
-    time.sleep(_pav_gap_s)
     last: Exception | None = None
-    for i in range(3):
+    for i in range(retries):
+        time.sleep(_pav_gap_s)
         try:
-            req = Request(url, headers=UA)
-            with urlopen(req, timeout=35) as r:
+            req = Request(url, headers=_PAV_HEADERS)
+            with urlopen(req, timeout=45) as r:
                 data = r.read().decode("utf-8", "ignore")
-            _pav_429_count = 0
-            _pav_gap_s = max(2.0, _pav_gap_s * 0.95)
+            _pav_429_streak = 0
+            # Ease slowly after success — never below 4s.
+            _pav_gap_s = max(4.0, _pav_gap_s * 0.98)
             return data
         except HTTPError as e:
             last = e
             if e.code == 429:
-                _pav_429_count += 1
-                _pav_gap_s = min(6.0, _pav_gap_s + 1.0)
-                wait = min(18.0, 6.0 + 4.0 * i)
+                _pav_429_streak += 1
+                _pav_gap_s = min(12.0, max(6.0, _pav_gap_s + 1.5))
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    ra = float(retry_after) if retry_after else 0.0
+                except ValueError:
+                    ra = 0.0
+                # Shopify often sends Retry-After; otherwise escalate hard (45→90→120…).
+                wait = max(ra, min(180.0, 45.0 * (1.6**min(i, 5))))
                 emit_progress(
-                    f"Pavlínek 429 ({_pav_429_count}) — pauza {wait:.0f}s, další gap {_pav_gap_s:.1f}s"
+                    f"Pavlínek 429 #{_pav_429_streak} — čekám {wait:.0f}s "
+                    f"(Retry-After={retry_after or '—'}, gap→{_pav_gap_s:.1f}s)"
                 )
                 time.sleep(wait)
                 continue
-            time.sleep(1.0 * (i + 1))
+            time.sleep(2.0 * (i + 1))
         except Exception as e:
             last = e
-            time.sleep(1.0 * (i + 1))
+            time.sleep(2.0 * (i + 1))
     raise last  # type: ignore
 
 
@@ -773,86 +788,135 @@ def _pav_image(product: dict) -> str | None:
     return None
 
 
-def parse_pavlinek_collection(handle: str, type_slug: str) -> list[dict]:
-    """Fetch all pages of a Shopify collection products.json."""
-    out: list[dict] = []
+def _pav_product_row(product: dict, type_slug: str) -> dict | None:
+    price = _pav_min_price(product.get("variants") or [])
+    if price is None or price <= 0:
+        return None
+    handle_p = (product.get("handle") or "").strip()
+    name = norm(product.get("title") or "")
+    if not name or not handle_p:
+        return None
+    sku = None
+    for v in product.get("variants") or []:
+        if v.get("sku"):
+            sku = str(v["sku"]).strip() or None
+            break
+    return {
+        "name": name[:220],
+        "price": round(price, 2),
+        "priceVat": round(price * VAT, 2),
+        "imageUrl": _pav_image(product),
+        "productUrl": f"{PAVLINEK_BASE}/products/{handle_p}",
+        "dimensions": dims_from_text(name),
+        "supplier": "Pavlínek",
+        "typeSlug": type_slug,
+        "unit": _pav_unit(type_slug),
+        "sku": sku,
+    }
+
+
+def _pav_load_all_products() -> dict[int, dict]:
+    """Full catalog via /products.json (~6 pages) — fewer hits than 64 collections."""
+    by_id: dict[int, dict] = {}
     page = 1
     while page <= 40:
-        url = f"{PAVLINEK_BASE}/collections/{handle}/products.json?limit=250&page={page}"
-        raw = get_pav(url)
-        data = json.loads(raw)
+        url = f"{PAVLINEK_BASE}/products.json?limit=250&page={page}"
+        data = json.loads(get_pav(url))
         products = data.get("products") or []
         if not products:
             break
         for product in products:
-            pid = product.get("id")
-            if pid is not None:
-                try:
-                    pid_i = int(pid)
-                except (TypeError, ValueError):
-                    pid_i = None
-                if pid_i is not None:
-                    if pid_i in _pav_seen_ids:
-                        continue
-                    _pav_seen_ids.add(pid_i)
-            price = _pav_min_price(product.get("variants") or [])
-            if price is None or price <= 0:
+            try:
+                pid = int(product["id"])
+            except (KeyError, TypeError, ValueError):
                 continue
-            handle_p = (product.get("handle") or "").strip()
-            name = norm(product.get("title") or "")
-            if not name or not handle_p:
-                continue
-            sku = None
-            for v in product.get("variants") or []:
-                if v.get("sku"):
-                    sku = str(v["sku"]).strip() or None
-                    break
-            out.append(
-                {
-                    "name": name[:220],
-                    "price": round(price, 2),
-                    "priceVat": round(price * VAT, 2),
-                    "imageUrl": _pav_image(product),
-                    "productUrl": f"{PAVLINEK_BASE}/products/{handle_p}",
-                    "dimensions": dims_from_text(name),
-                    "supplier": "Pavlínek",
-                    "typeSlug": type_slug,
-                    "unit": _pav_unit(type_slug),
-                    "sku": sku,
-                }
-            )
+            by_id[pid] = product
+        emit_progress(f"Pavlínek katalog: stránka {page}, celkem {len(by_id)} produktů")
         if len(products) < 250:
             break
         page += 1
-    return out
+    return by_id
+
+
+def _pav_collection_ids(handle: str) -> list[int]:
+    """Product IDs in a collection (paginated). Details come from the catalog dump."""
+    ids: list[int] = []
+    page = 1
+    while page <= 40:
+        url = f"{PAVLINEK_BASE}/collections/{handle}/products.json?limit=250&page={page}"
+        data = json.loads(get_pav(url))
+        products = data.get("products") or []
+        if not products:
+            break
+        for product in products:
+            try:
+                ids.append(int(product["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if len(products) < 250:
+            break
+        page += 1
+    return ids
 
 
 def scrape_pavlinek(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
-    """Sequential scrape (Shopify rate-limits bursts). Returns (rows, failed)."""
-    global _pav_seen_ids, _pav_gap_s, _pav_429_count
+    """Dump /products.json once, then map collections → typeSlug (patient 429 backoff)."""
+    global _pav_seen_ids, _pav_gap_s, _pav_429_streak
     _pav_seen_ids = set()
-    _pav_gap_s = 2.2
-    _pav_429_count = 0
+    _pav_gap_s = 5.0
+    _pav_429_streak = 0
     entries = [
         e for e in (cmap.get("pavlinek") or []) if e.get("handle") and e.get("typeSlug")
     ]
     if not entries:
         return [], set()
-    all_rows: list[dict] = []
+
+    emit_progress(
+        f"Pavlínek: nejdřív celý katalog (/products.json), pak {len(entries)} kolekcí "
+        f"(gap ~{_pav_gap_s:.0f}s, při 429 pauza až 2 min)"
+    )
+    try:
+        catalog = _pav_load_all_products()
+    except Exception as err:
+        emit_progress(f"Pavlínek FAIL katalog: {err}")
+        failed_slugs = {("Pavlínek", e["typeSlug"]) for e in entries}
+        return [], failed_slugs
+
+    if not catalog:
+        emit_progress("Pavlínek: prázdný katalog")
+        return [], {("Pavlínek", e["typeSlug"]) for e in entries}
+
+    # First-mapped collection wins for overlapping products.
+    id_to_slug: dict[int, str] = {}
     failed: set[tuple[str, str]] = set()
-    emit_progress(f"Pavlínek: {len(entries)} kolekcí, ~{_pav_gap_s:.1f}s mezi requesty (Shopify limit)")
     for i, e in enumerate(entries, 1):
         slug, handle = e["typeSlug"], e["handle"]
         try:
-            rows = parse_pavlinek_collection(handle, slug)
-            emit_progress(f"Pavlínek {i}/{len(entries)} {slug}: {len(rows)}  {handle}")
-            all_rows.extend(rows)
+            ids = _pav_collection_ids(handle)
+            fresh = 0
+            for pid in ids:
+                if pid in _pav_seen_ids:
+                    continue
+                if pid not in catalog:
+                    continue
+                _pav_seen_ids.add(pid)
+                id_to_slug[pid] = slug
+                fresh += 1
+            emit_progress(
+                f"Pavlínek {i}/{len(entries)} {slug}: +{fresh} (kolekce {len(ids)})  {handle}"
+            )
         except Exception as err:
             failed.add(("Pavlínek", slug))
             emit_progress(f"Pavlínek SKIP {slug}/{handle}: {err} (ponechám staré položky typu)")
-            # Cool down harder after a hard fail so the next collection has a chance.
-            _pav_gap_s = min(6.0, _pav_gap_s + 1.5)
-            time.sleep(3.0)
+            _pav_gap_s = min(12.0, _pav_gap_s + 2.0)
+            time.sleep(30.0)
+
+    all_rows: list[dict] = []
+    for pid, slug in id_to_slug.items():
+        row = _pav_product_row(catalog[pid], slug)
+        if row:
+            all_rows.append(row)
+    emit_progress(f"Pavlínek hotovo: {len(all_rows)} položek, skip kolekcí/typů: {len(failed)}")
     return all_rows, failed
 
 

@@ -592,7 +592,7 @@ function updateModalHtml(): string {
     const boxes = UPDATE_SUPPLIER_OPTIONS.map((name) => {
       const checked = updateSelectedSuppliers.includes(name)
       const hint =
-        name === 'Pavlínek' ? ' · Shopify, pomalé / 429' : name === 'Hydrotruck' ? ' · občas SSL' : ''
+        name === 'Pavlínek' ? ' · Shopify, ~5–10 min, při 429 dlouhá pauza' : name === 'Hydrotruck' ? ' · občas SSL' : ''
       return `<label class="upd-supplier-opt">
         <input type="checkbox" data-update-supplier="${escapeAttr(name)}" ${checked ? 'checked' : ''} />
         <span class="sup-badge lg sup-${supplierKey(name)}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(name)}</span>
