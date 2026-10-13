@@ -159,8 +159,14 @@ const pickToken = pageParams.get('token') || ''
 let selectedSlug: string | null = slugFromHash() === QUOTE_HASH ? null : slugFromHash()
 let renderLimit = PAGE_SIZE
 let searchQ = ''
-let supplierFilter = ''
+/** Active supplier badges; empty Set = no products. Filled on first catalog load. */
+let selectedSuppliers = new Set<string>()
+let suppliersFilterReady = false
+let knownSupplierSnapshot = new Set<string>()
+let sortOrder: 'price_asc' | 'price_desc' = 'price_asc'
 let viewMode: 'browse' | 'search' | 'quote' = slugFromHash() === QUOTE_HASH ? 'quote' : 'browse'
+/** Pick-mode URL may preselect one supplier until the first supplier list arrives. */
+let pendingPickSupplier = ''
 
 if (pickMode) {
   const initialQ = (pageParams.get('q') || '').trim()
@@ -170,7 +176,7 @@ if (pickMode) {
     viewMode = 'search'
     selectedSlug = null
   }
-  if (initialSupplier) supplierFilter = initialSupplier
+  if (initialSupplier) pendingPickSupplier = initialSupplier
   document.title = 'Vybrat příslušenství · ContSystem'
 }
 let priceHistoryCache: Record<string, PriceHistoryEntry[]> = {}
@@ -269,12 +275,61 @@ async function hydrateCartProducts() {
   }
 }
 
+function mergeKnownSuppliers(list: string[]) {
+  const filtered = list.filter((s) => s && s !== 'tržní odhad')
+  allCatalogSuppliers = [...filtered].sort((a, b) => a.localeCompare(b, 'cs'))
+  if (!suppliersFilterReady) {
+    if (pendingPickSupplier && filtered.includes(pendingPickSupplier)) {
+      selectedSuppliers = new Set([pendingPickSupplier])
+    } else {
+      selectedSuppliers = new Set(filtered)
+    }
+    knownSupplierSnapshot = new Set(filtered)
+    suppliersFilterReady = true
+    pendingPickSupplier = ''
+    return
+  }
+  for (const s of filtered) {
+    if (!knownSupplierSnapshot.has(s)) {
+      knownSupplierSnapshot.add(s)
+      selectedSuppliers.add(s)
+    }
+  }
+}
+
+function selectAllSuppliers() {
+  selectedSuppliers = new Set(allCatalogSuppliers)
+}
+
+function supplierFilterParam(): string | null {
+  if (!suppliersFilterReady || !allCatalogSuppliers.length) return null
+  if (selectedSuppliers.size === 0) return null
+  const allOn = allCatalogSuppliers.every((s) => selectedSuppliers.has(s))
+  if (allOn) return null
+  return [...selectedSuppliers].join(',')
+}
+
+function supplierFilterLabel(): string {
+  if (!suppliersFilterReady) return 'všichni'
+  if (selectedSuppliers.size === 0) return 'žádný'
+  if (allCatalogSuppliers.length && allCatalogSuppliers.every((s) => selectedSuppliers.has(s))) {
+    return 'všichni'
+  }
+  return [...selectedSuppliers].sort((a, b) => a.localeCompare(b, 'cs')).join(', ')
+}
+
 let loadSeq = 0
 async function loadProductsForCurrent() {
   const seq = ++loadSeq // a newer load (e.g. category then supplier filter from Kapitán Karel) wins
   catalogLoading = true
   catalogError = null
   render()
+  if (suppliersFilterReady && selectedSuppliers.size === 0) {
+    catalogItems = []
+    catalogLoading = false
+    if (seq === loadSeq) render()
+    return
+  }
   try {
     const params = new URLSearchParams()
     if (viewMode === 'search' && searchQ.trim()) {
@@ -282,22 +337,33 @@ async function loadProductsForCurrent() {
     } else if (selectedSlug && selectedSlug !== ALL_SLUG) {
       params.set('type', selectedSlug)
     }
-    if (supplierFilter) params.set('supplier', supplierFilter)
+    const supplierParam = supplierFilterParam()
+    if (supplierParam) params.set('supplier', supplierParam)
+    params.set('sort', sortOrder)
     const res = await apiFetch(`/products?${params}`)
     const data = await res.json()
     if (seq !== loadSeq) return
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-    catalogItems = data.items as Product[]
+    let items = data.items as Product[]
     renderLimit = PAGE_SIZE
     catalogSuppliers = data.suppliers as string[]
     if (Array.isArray(data.allSuppliers) && data.allSuppliers.length) {
-      allCatalogSuppliers = data.allSuppliers as string[]
+      mergeKnownSuppliers(data.allSuppliers as string[])
     } else {
-      for (const s of catalogSuppliers) {
-        if (s !== 'tržní odhad' && !allCatalogSuppliers.includes(s)) allCatalogSuppliers.push(s)
-      }
-      allCatalogSuppliers.sort((a, b) => a.localeCompare(b, 'cs'))
+      const fallback = [
+        ...new Set([
+          ...allCatalogSuppliers,
+          ...catalogSuppliers.filter((s) => s !== 'tržní odhad'),
+        ]),
+      ]
+      mergeKnownSuppliers(fallback)
     }
+    // After first init (e.g. pick-mode single supplier), re-filter if we loaded unfiltered.
+    if (suppliersFilterReady && selectedSuppliers.size && selectedSuppliers.size < allCatalogSuppliers.length) {
+      items = items.filter((p) => selectedSuppliers.has(p.supplier))
+    }
+    if (suppliersFilterReady && selectedSuppliers.size === 0) items = []
+    catalogItems = items
     for (const p of catalogItems) productsById.set(p.id, p)
     catalogLoading = false
   } catch (err) {
@@ -341,7 +407,6 @@ function selectType(slug: string) {
   viewMode = 'browse'
   searchQ = ''
   searchEl.value = ''
-  supplierFilter = ''
   history.replaceState(null, '', slug === ALL_SLUG ? location.pathname + location.search : `#/${slug}`)
   window.scrollTo({ top: 0 })
   void loadProductsForCurrent()
@@ -912,15 +977,31 @@ function supplierFilterHtml(counts: Map<string, number>): string {
   const list = allCatalogSuppliers.length
     ? allCatalogSuppliers
     : [...counts.keys()].filter((s) => s !== 'tržní odhad').sort((a, b) => a.localeCompare(b, 'cs'))
-  const btn = (value: string, label: string, key: string, n?: number) => {
-    const active = value === supplierFilter
-    const count =
-      n != null ? `<span class="legend-n">${n}</span>` : counts.has(value) ? `<span class="legend-n">${counts.get(value)}</span>` : ''
-    return `<button type="button" class="sup-filter-btn ${active ? 'active' : ''}" data-supplier-filter="${escapeAttr(value)}" aria-pressed="${active}" ${disabled ? 'disabled' : ''} title="${disabled ? 'Filtr dodavatele platí pro katalog' : `Filtrovat: ${escapeAttr(label)}`}">
-      <span class="sup-badge lg sup-${key}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(label)}</span>${count}
+  return list
+    .map((s) => {
+      const active = selectedSuppliers.has(s)
+      const count = counts.has(s) ? `<span class="legend-n">${counts.get(s)}</span>` : ''
+      const title = disabled
+        ? 'Filtr dodavatele platí pro katalog'
+        : active
+          ? `Vypnout: ${s}`
+          : `Zapnout: ${s}`
+      return `<button type="button" class="sup-filter-btn ${active ? 'active' : 'off'}" data-supplier-filter="${escapeAttr(s)}" aria-pressed="${active}" ${disabled ? 'disabled' : ''} title="${escapeAttr(title)}">
+      <span class="sup-badge lg sup-${supplierKey(s)}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(s)}</span>${count}
     </button>`
-  }
-  return `${btn('', 'Všichni', 'other')}${list.map((s) => btn(s, s, supplierKey(s))).join('')}`
+    })
+    .join('')
+}
+
+function sortControlHtml(): string {
+  const disabled = viewMode === 'quote'
+  return `<label class="sort-control">
+    <span class="sort-label">Cena</span>
+    <select class="select sort-select" data-sort aria-label="Řazení podle ceny" ${disabled ? 'disabled' : ''}>
+      <option value="price_asc" ${sortOrder === 'price_asc' ? 'selected' : ''}>↑ nejlevnější</option>
+      <option value="price_desc" ${sortOrder === 'price_desc' ? 'selected' : ''}>↓ nejdražší</option>
+    </select>
+  </label>`
 }
 
 /** All supplier thumbnails go through our own origin (cache, allowlist, jpg→webp repair). */
@@ -1478,17 +1559,22 @@ function renderMain() {
         ${isAll ? `<div class="crumb">Celý katalog</div>` : viewMode === 'browse' && t ? `<div class="crumb">${escapeHtml(t.category)}</div>` : ''}
         <h1>${escapeHtml(heading)}</h1>
         <p class="lead">${
-          viewMode === 'search'
-            ? `${catalogItems.length} výsledků`
-            : isAll
-              ? `${catalogItems.length} položek ze všech ${types.length} kategorií${supplierFilter ? ` · ${escapeHtml(supplierFilter)}` : ''} · seřazeno podle ceny`
-              : t
-              ? `${catalogItems.length} položek · ceny bez DPH i s DPH`
-              : ''
+          suppliersFilterReady && selectedSuppliers.size === 0
+            ? 'Žádný dodavatel není zapnutý'
+            : viewMode === 'search'
+              ? `${catalogItems.length} výsledků · cena ${sortOrder === 'price_desc' ? '↓' : '↑'}`
+              : isAll
+                ? `${catalogItems.length} položek ze všech ${types.length} kategorií · ${escapeHtml(supplierFilterLabel())} · cena ${sortOrder === 'price_desc' ? '↓' : '↑'}`
+                : t
+                  ? `${catalogItems.length} položek · cena ${sortOrder === 'price_desc' ? '↓' : '↑'}`
+                  : ''
         }</p>
       </div>
-      <div class="supplier-legend" role="group" aria-label="Filtrovat podle dodavatele">
-        ${supplierFilterHtml(supplierCounts)}
+      <div class="catalog-toolbar">
+        <div class="supplier-legend" role="group" aria-label="Filtrovat podle dodavatele">
+          ${supplierFilterHtml(supplierCounts)}
+        </div>
+        ${sortControlHtml()}
       </div>
     </div>
     ${relatedStripHtml()}
@@ -1499,7 +1585,11 @@ function renderMain() {
           : catalogError
             ? `<div class="empty error">${escapeHtml(catalogError)}</div>`
             : !catalogItems.length
-              ? `<div class="empty">Žádné produkty</div>`
+              ? `<div class="empty">${
+                  suppliersFilterReady && selectedSuppliers.size === 0
+                    ? 'Žádné produkty — zapněte alespoň jednoho dodavatele'
+                    : 'Žádné produkty'
+                }</div>`
               : catalogItems.slice(0, renderLimit).map((p) => productCardHtml(p)).join('')
       }
     </div>
@@ -1643,7 +1733,10 @@ app.addEventListener('click', (e) => {
   }
   const supplierBtn = target.closest<HTMLElement>('[data-supplier-filter]')
   if (supplierBtn && !supplierBtn.hasAttribute('disabled')) {
-    supplierFilter = supplierBtn.dataset.supplierFilter || ''
+    const name = supplierBtn.dataset.supplierFilter || ''
+    if (!name) return
+    if (selectedSuppliers.has(name)) selectedSuppliers.delete(name)
+    else selectedSuppliers.add(name)
     void loadProductsForCurrent()
     return
   }
@@ -1752,6 +1845,12 @@ app.addEventListener('click', (e) => {
 
 app.addEventListener('change', (e) => {
   const target = e.target as HTMLElement
+  if (target.matches('[data-sort]')) {
+    const v = (target as HTMLSelectElement).value
+    sortOrder = v === 'price_desc' ? 'price_desc' : 'price_asc'
+    void loadProductsForCurrent()
+    return
+  }
   if (target.matches('[data-qty] input')) {
     const id = target.closest<HTMLElement>('[data-qty]')!.dataset.qty!
     setQty(id, Number((target as HTMLInputElement).value))
@@ -1891,7 +1990,8 @@ function chatContext(): Record<string, unknown> {
         const related = selectedSlug === ALL_SLUG ? [] : relatedFor(selectedSlug).map((r) => r.name)
         if (related.length) ctx['Související kategorie'] = related.slice(0, 6).join(', ')
       }
-      ctx['Filtr dodavatele'] = supplierFilter || 'všichni'
+      ctx['Filtr dodavatele'] = supplierFilterLabel()
+      ctx['Řazení'] = sortOrder === 'price_desc' ? 'cena ↓' : 'cena ↑'
       if (searchQ.trim()) ctx['Hledaný text'] = searchQ.trim().slice(0, 80)
       ctx['Počet produktů v seznamu'] = catalogLoading ? 'načítá se' : catalogItems.length
       if (open) {
@@ -1944,7 +2044,9 @@ async function focusProduct(p: Product) {
   viewMode = 'browse'
   searchQ = ''
   searchEl.value = ''
-  supplierFilter = ''
+  // Ensure the product's supplier is visible (keep other toggles).
+  if (p.supplier) selectedSuppliers.add(p.supplier)
+  else selectAllSuppliers()
   history.replaceState(null, '', `#/${p.typeSlug}`)
   await loadProductsForCurrent()
   const idx = catalogItems.findIndex((x) => x.id === p.id)
@@ -1973,13 +2075,24 @@ function applyChatAction(a: ChatAction): { undo?: () => void } | void {
       if (slug === ALL_SLUG || types.some((t) => t.slug === slug)) selectType(slug)
       return
     }
-    case 'nastavit_filtr_dodavatele':
+    case 'nastavit_filtr_dodavatele': {
       toCatalogView()
-      supplierFilter = String(args.dodavatel || '')
+      const raw = String(args.dodavatel || '').trim()
+      if (!raw || raw.toLocaleLowerCase('cs').startsWith('vsich')) {
+        selectAllSuppliers()
+      } else {
+        selectedSuppliers = new Set([raw])
+        if (!allCatalogSuppliers.includes(raw)) {
+          allCatalogSuppliers = [...allCatalogSuppliers, raw].sort((a, b) => a.localeCompare(b, 'cs'))
+          knownSupplierSnapshot.add(raw)
+        }
+        suppliersFilterReady = true
+      }
       viewMode = searchQ.trim() ? 'search' : 'browse'
       if (viewMode === 'browse' && !selectedSlug) selectedSlug = ALL_SLUG
       void loadProductsForCurrent()
       return
+    }
     case 'hledat_v_katalogu': {
       toCatalogView()
       searchQ = String(args.text || '').slice(0, 80)

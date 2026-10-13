@@ -99,7 +99,7 @@ export const TOOL_DEFS: ToolDef[] = [
     type: 'function',
     function: {
       name: 'nastavit_filtr_dodavatele',
-      description: 'Nastaví filtr dodavatele (vsichni = zrušit).',
+      description: 'Nastaví filtr dodavatele (jeden = jen ten; vsichni = zapnout všechny).',
       parameters: { type: 'object', properties: { dodavatel: { type: 'string', enum: [...SUPPLIERS, 'vsichni'] } }, required: ['dodavatel'] },
     },
   },

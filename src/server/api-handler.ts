@@ -359,12 +359,18 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       if (method === 'GET' && pathOnly === '/api/products') {
         const u = new URL(url, 'http://localhost')
         const typeSlug = u.searchParams.get('type')
-        const supplier = u.searchParams.get('supplier')
+        const supplierRaw = (u.searchParams.get('supplier') || '').trim()
+        const wantedSuppliers = supplierRaw
+          ? [...new Set(supplierRaw.split(',').map((s) => s.trim()).filter(Boolean))]
+          : []
+        const sort = u.searchParams.get('sort') === 'price_desc' ? 'price_desc' : 'price_asc'
         const q = (u.searchParams.get('q') || '').trim().toLocaleLowerCase('cs')
         const { products } = await loadCatalog()
         let items = products
         if (typeSlug) items = items.filter((p) => p.typeSlug === typeSlug)
-        if (supplier) items = items.filter((p) => p.supplier === supplier)
+        if (wantedSuppliers.length) {
+          items = items.filter((p) => wantedSuppliers.includes(p.supplier))
+        }
         if (q) {
           items = items.filter(
             (p) =>
@@ -375,14 +381,16 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
               p.typeSlug.toLocaleLowerCase('cs').includes(q),
           )
         }
-        items.sort((a, b) => a.priceVat - b.priceVat)
+        items.sort((a, b) =>
+          sort === 'price_desc' ? b.priceVat - a.priceVat : a.priceVat - b.priceVat,
+        )
         const suppliers = [...new Set(items.map((p) => p.supplier))].sort((a, b) =>
           a.localeCompare(b, 'cs'),
         )
         const allSuppliers = [
           ...new Set(products.map((p) => p.supplier).filter((s) => s && s !== 'tržní odhad')),
         ].sort((a, b) => a.localeCompare(b, 'cs'))
-        json(res, 200, { items, suppliers, allSuppliers, total: items.length })
+        json(res, 200, { items, suppliers, allSuppliers, total: items.length, sort })
         return
       }
 
