@@ -379,7 +379,10 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         const suppliers = [...new Set(items.map((p) => p.supplier))].sort((a, b) =>
           a.localeCompare(b, 'cs'),
         )
-        json(res, 200, { items, suppliers, total: items.length })
+        const allSuppliers = [
+          ...new Set(products.map((p) => p.supplier).filter((s) => s && s !== 'tržní odhad')),
+        ].sort((a, b) => a.localeCompare(b, 'cs'))
+        json(res, 200, { items, suppliers, allSuppliers, total: items.length })
         return
       }
 

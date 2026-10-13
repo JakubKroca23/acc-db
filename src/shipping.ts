@@ -48,6 +48,15 @@ export const SHIPPING_RATES: ShippingRate[] = [
     freeFromExVat: null,
     sourceUrl: 'https://www.alsap.cz/doprava_info/',
   },
+  {
+    supplier: 'Pavlínek',
+    label: 'PPL / GLS (odhad)',
+    priceExVat: 129,
+    priceVat: Math.round(129 * 1.21),
+    note: 'Pavlínek neuvádí pevný veřejný ceník dopravy; odhad balíku do ~30 kg. Metráž/řetězy často nadrozměr.',
+    freeFromExVat: null,
+    sourceUrl: 'https://www.pavlinek.cz',
+  },
 ]
 
 /** Oversized / pallet-like accessory types → higher average freight. */
@@ -58,6 +67,8 @@ const OVERSIZE_TYPES = new Set([
   'box-na-naradi',
   'klece-na-podkladaci-desky',
   'zadni-zabrana',
+  'metraz-lana-retezy',
+  'zvedaci-technika',
 ])
 
 const OVERSIZE_EX_VAT = 289 // ~ TOPTRANS mid + half-pallet feel

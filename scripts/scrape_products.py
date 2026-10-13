@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scrape ALSAP + Trans-Technik (+ optional Hydrotruck) into scraped_products.json.
+"""Scrape ALSAP + Trans-Technik (+ optional Hydrotruck) + Pavlínek into scraped_products.json.
 
 Fixes vs first version:
 - ALSAP pagination uses ?f=OFFSET (not strana=/page=)
@@ -9,6 +9,7 @@ Fixes vs first version:
 - Discover TT leaf pages that contain products (cards or tables)
 - Hydrotruck: ?str=PAGE pagination + insecure-SSL fallback; pad/holder reclassify
 - ALSAP product pages that are a size/option group (JSON-LD hasVariant) become one row per option
+- Pavlínek: Shopify /collections/{handle}/products.json (prices ex VAT)
 """
 from __future__ import annotations
 
@@ -681,6 +682,122 @@ def _expand_one_alsap(parent: dict) -> list[dict]:
     return rows or [parent]
 
 
+# ── Pavlínek (Shopify JSON) ────────────────────────────────────────
+
+PAVLINEK_BASE = "https://www.pavlinek.cz"
+# First-mapped typeSlug wins when the same product appears in multiple collections.
+_pav_seen_ids: set[int] = set()
+
+
+def _pav_unit(type_slug: str) -> str:
+    if type_slug == "metraz-lana-retezy":
+        return "m"
+    if type_slug == "hydraulicky-olej":
+        return "L"
+    return "ks"
+
+
+def _pav_min_price(variants: list[dict]) -> float | None:
+    prices: list[float] = []
+    for v in variants or []:
+        raw = v.get("price")
+        if raw is None:
+            continue
+        try:
+            prices.append(float(raw))
+        except (TypeError, ValueError):
+            continue
+    return min(prices) if prices else None
+
+
+def _pav_image(product: dict) -> str | None:
+    images = product.get("images") or []
+    if images and isinstance(images[0], dict):
+        src = (images[0].get("src") or "").strip()
+        if src.startswith("//"):
+            src = "https:" + src
+        return src or None
+    return None
+
+
+def parse_pavlinek_collection(handle: str, type_slug: str) -> list[dict]:
+    """Fetch all pages of a Shopify collection products.json."""
+    out: list[dict] = []
+    page = 1
+    while page <= 40:
+        url = f"{PAVLINEK_BASE}/collections/{handle}/products.json?limit=250&page={page}"
+        raw = get(url)
+        data = json.loads(raw)
+        products = data.get("products") or []
+        if not products:
+            break
+        for product in products:
+            pid = product.get("id")
+            if pid is not None:
+                try:
+                    pid_i = int(pid)
+                except (TypeError, ValueError):
+                    pid_i = None
+                if pid_i is not None:
+                    if pid_i in _pav_seen_ids:
+                        continue
+                    _pav_seen_ids.add(pid_i)
+            price = _pav_min_price(product.get("variants") or [])
+            if price is None or price <= 0:
+                continue
+            handle_p = (product.get("handle") or "").strip()
+            name = norm(product.get("title") or "")
+            if not name or not handle_p:
+                continue
+            sku = None
+            for v in product.get("variants") or []:
+                if v.get("sku"):
+                    sku = str(v["sku"]).strip() or None
+                    break
+            out.append(
+                {
+                    "name": name[:220],
+                    "price": round(price, 2),
+                    "priceVat": round(price * VAT, 2),
+                    "imageUrl": _pav_image(product),
+                    "productUrl": f"{PAVLINEK_BASE}/products/{handle_p}",
+                    "dimensions": dims_from_text(name),
+                    "supplier": "Pavlínek",
+                    "typeSlug": type_slug,
+                    "unit": _pav_unit(type_slug),
+                    "sku": sku,
+                }
+            )
+        if len(products) < 250:
+            break
+        page += 1
+    return out
+
+
+def scrape_pavlinek(cmap: dict) -> list[dict]:
+    global _pav_seen_ids
+    _pav_seen_ids = set()
+    entries = cmap.get("pavlinek") or []
+    if not entries:
+        return []
+    all_rows: list[dict] = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {
+            ex.submit(parse_pavlinek_collection, e["handle"], e["typeSlug"]): (e["typeSlug"], e["handle"])
+            for e in entries
+            if e.get("handle") and e.get("typeSlug")
+        }
+        for fut in as_completed(futs):
+            slug, handle = futs[fut]
+            try:
+                rows = fut.result()
+                emit_progress(f"Pavlínek {slug}: {len(rows)}  {handle}")
+                all_rows.extend(rows)
+            except Exception as e:
+                emit_progress(f"Pavlínek ERR {slug}/{handle}: {e}")
+    return all_rows
+
+
 def expand_alsap_variants(items: list[dict]) -> list[dict]:
     """Replace ALSAP group cards (e.g. bedna „od 400 do 1000 mm“) with every option."""
     if os.environ.get("SKIP_ALSAP_VARIANTS") == "1":
@@ -809,6 +926,17 @@ def main() -> None:
             except Exception as e:
                 failed.add(("Hydrotruck", s))
                 emit_progress(f"HT ERR {s}: {e}")
+
+    # Pavlínek (Shopify JSON)
+    if os.environ.get("SKIP_PAVLINEK") != "1":
+        emit_progress("=== Pavlínek ===")
+        try:
+            pav = scrape_pavlinek(cmap)
+            all_items.extend(pav)
+            emit_progress(f"Pavlínek total unique: {len(pav)}")
+        except Exception as e:
+            failed.add(("Pavlínek", "*"))
+            emit_progress(f"Pavlínek ERR: {e}")
 
     # Manual / estimate fillers
     all_items.extend(

@@ -72,7 +72,13 @@ export function plainLine(raw: string): { text: string; heading: boolean } | nul
   return { text: line, heading }
 }
 
-const SUPPLIER_NAME: Record<string, string> = { alsap: 'ALSAP', 'trans-technik': 'Trans-Technik', hydrotruck: 'Hydrotruck', vsichni: 'vsichni' }
+const SUPPLIER_NAME: Record<string, string> = {
+  alsap: 'ALSAP',
+  'trans-technik': 'Trans-Technik',
+  hydrotruck: 'Hydrotruck',
+  pavlinek: 'Pavlínek',
+  vsichni: 'vsichni',
+}
 const SUPPLIER_IDS = Object.keys(SUPPLIER_NAME)
 const LINK_RE = /\[\[(produkt|pridat|kategorie|nabidka|hledat|dodavatel)(?::([A-Za-z0-9_-]{1,64}))?\|([^\]\n]{1,80})\]\]/g
 

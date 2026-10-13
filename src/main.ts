@@ -182,6 +182,8 @@ let catalogScrollY = 0
 
 let catalogItems: Product[] = []
 let catalogSuppliers: string[] = []
+/** Full supplier list for filter badges (not limited to current result set). */
+let allCatalogSuppliers: string[] = []
 let catalogLoading = false
 let catalogError: string | null = null
 let searchTimer: number | undefined
@@ -278,6 +280,14 @@ async function loadProductsForCurrent() {
     catalogItems = data.items as Product[]
     renderLimit = PAGE_SIZE
     catalogSuppliers = data.suppliers as string[]
+    if (Array.isArray(data.allSuppliers) && data.allSuppliers.length) {
+      allCatalogSuppliers = data.allSuppliers as string[]
+    } else {
+      for (const s of catalogSuppliers) {
+        if (s !== 'tržní odhad' && !allCatalogSuppliers.includes(s)) allCatalogSuppliers.push(s)
+      }
+      allCatalogSuppliers.sort((a, b) => a.localeCompare(b, 'cs'))
+    }
     for (const p of catalogItems) productsById.set(p.id, p)
     catalogLoading = false
   } catch (err) {
@@ -594,17 +604,34 @@ function startUpdatePolling() {
 }
 
 // ── supplier colours & images ─────────────────────────────────────
-/** Stable CSS modifier for a supplier — ALSAP red, Trans-Technik blue, Hydrotruck green. */
+/** Stable CSS modifier for a supplier — ALSAP red, TT blue, HT green, Pavlínek amber. */
 function supplierKey(supplier: string): string {
   const s = supplier.toLocaleLowerCase('cs')
   if (s.includes('alsap')) return 'alsap'
   if (s.includes('trans')) return 'tt'
   if (s.includes('hydro')) return 'ht'
+  if (s.includes('pavlínek') || s.includes('pavlinek')) return 'pav'
   return 'other'
 }
 
 function supplierBadge(supplier: string, extra = ''): string {
   return `<span class="sup-badge sup-${supplierKey(supplier)} ${extra}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(supplier)}</span>`
+}
+
+function supplierFilterHtml(counts: Map<string, number>): string {
+  const disabled = viewMode === 'quote'
+  const list = allCatalogSuppliers.length
+    ? allCatalogSuppliers
+    : [...counts.keys()].filter((s) => s !== 'tržní odhad').sort((a, b) => a.localeCompare(b, 'cs'))
+  const btn = (value: string, label: string, key: string, n?: number) => {
+    const active = value === supplierFilter
+    const count =
+      n != null ? `<span class="legend-n">${n}</span>` : counts.has(value) ? `<span class="legend-n">${counts.get(value)}</span>` : ''
+    return `<button type="button" class="sup-filter-btn ${active ? 'active' : ''}" data-supplier-filter="${escapeAttr(value)}" aria-pressed="${active}" ${disabled ? 'disabled' : ''} title="${disabled ? 'Filtr dodavatele platí pro katalog' : `Filtrovat: ${escapeAttr(label)}`}">
+      <span class="sup-badge lg sup-${key}"><span class="sup-dot" aria-hidden="true"></span>${escapeHtml(label)}</span>${count}
+    </button>`
+  }
+  return `${btn('', 'Všichni', 'other')}${list.map((s) => btn(s, s, supplierKey(s))).join('')}`
 }
 
 /** All supplier thumbnails go through our own origin (cache, allowlist, jpg→webp repair). */
@@ -971,7 +998,6 @@ app.innerHTML = `
       <a class="brand" href="${BASE}">
         <span class="brand-app">Katalog příslušenství</span>
       </a>
-      <div class="header-filter" data-region="header-filter"></div>
       <div class="header-search">
         <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         <input class="search" type="search" placeholder="Hledat v katalogu…" aria-label="Hledat produkty" data-global-search />
@@ -997,13 +1023,7 @@ const region = (name: string) => app.querySelector<HTMLElement>(`[data-region="$
 const searchEl = app.querySelector<HTMLInputElement>('[data-global-search]')!
 
 function renderHeaderFilter() {
-  region('header-filter').innerHTML = `
-    <select class="select" data-supplier aria-label="Dodavatel" title="${viewMode === 'quote' ? 'Filtr dodavatele platí pro katalog' : 'Filtrovat podle dodavatele'}" ${viewMode === 'quote' ? 'disabled' : ''}>
-      <option value="">Všichni dodavatelé</option>
-      ${catalogSuppliers
-        .map((s) => `<option value="${escapeAttr(s)}" ${s === supplierFilter ? 'selected' : ''}>${escapeHtml(s)}</option>`)
-        .join('')}
-    </select>`
+  /* supplier filter moved to clickable badges in content-head */
 }
 
 function renderHeaderActions() {
@@ -1177,8 +1197,8 @@ function renderMain() {
               : ''
         }</p>
       </div>
-      <div class="supplier-legend" aria-label="Dodavatelé v seznamu">
-        ${[...supplierCounts.entries()].map(([s, n]) => `${supplierBadge(s)}<span class="legend-n">${n}</span>`).join('')}
+      <div class="supplier-legend" role="group" aria-label="Filtrovat podle dodavatele">
+        ${supplierFilterHtml(supplierCounts)}
       </div>
     </div>
     ${relatedStripHtml()}
@@ -1330,6 +1350,12 @@ app.addEventListener('click', (e) => {
     void togglePriceHistory(historyBtn.dataset.history!)
     return
   }
+  const supplierBtn = target.closest<HTMLElement>('[data-supplier-filter]')
+  if (supplierBtn && !supplierBtn.hasAttribute('disabled')) {
+    supplierFilter = supplierBtn.dataset.supplierFilter || ''
+    void loadProductsForCurrent()
+    return
+  }
   const pickBtn = target.closest<HTMLElement>('[data-pick]')
   if (pickBtn) {
     const id = pickBtn.dataset.pick!
@@ -1396,11 +1422,6 @@ app.addEventListener('click', (e) => {
 
 app.addEventListener('change', (e) => {
   const target = e.target as HTMLElement
-  if (target.matches('[data-supplier]')) {
-    supplierFilter = (target as HTMLSelectElement).value
-    void loadProductsForCurrent()
-    return
-  }
   if (target.matches('[data-qty] input')) {
     const id = target.closest<HTMLElement>('[data-qty]')!.dataset.qty!
     setQty(id, Number((target as HTMLInputElement).value))

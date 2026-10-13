@@ -25,6 +25,9 @@ const ALLOWED_HOSTS = new Set([
   'trans-technik.cz',
   'www.hydrotruck.cz',
   'hydrotruck.cz',
+  'www.pavlinek.cz',
+  'pavlinek.cz',
+  'cdn.shopify.com',
 ])
 
 const MAX_BYTES = 6 * 1024 * 1024
