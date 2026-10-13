@@ -87,6 +87,8 @@
 
 html {
   scrollbar-gutter: stable; /* no layout jump between short and long views */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 html,
@@ -1986,98 +1988,157 @@ textarea:focus {
     flex: 1;
     min-width: 0;
     height: 36px;
-    font-size: 14px;
+    font-size: 16px; /* iOS: avoid zoom on focus */
+  }
+  /* Phone: no pinch / double-tap zoom, no sideways page scroll.
+     Chip rows still pan sideways. */
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: clip;
+  }
+  body {
+    touch-action: pan-y;
+  }
+  .nav,
+  .supplier-legend,
+  .related-chips {
+    touch-action: pan-x;
+  }
+  input,
+  select,
+  textarea {
+    font-size: 16px;
   }
 }
 
 @media (max-width: 640px) {
+  .content {
+    padding: 8px 6px 24px;
+  }
   .product-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 6px;
-    margin-top: 10px;
+    margin-top: 8px;
   }
   .product-card {
+    min-width: 0;
     border-radius: var(--radius-md);
   }
   .thumb {
     aspect-ratio: 1;
-    padding: 4px;
+    padding: 3px;
   }
   .img-fallback {
-    width: 34px;
-    height: 34px;
-    font-size: 14px;
+    width: 28px;
+    height: 28px;
+    font-size: 13px;
   }
   .product-body {
-    padding: 6px 7px 8px;
-    gap: 3px;
+    padding: 5px 5px 6px;
+    gap: 2px;
   }
   .product-meta-top {
     min-height: 0;
-    gap: 4px;
+    min-width: 0;
+    gap: 0;
+  }
+  .product-card .sup-badge {
+    max-width: 100%;
+    height: 16px;
+    padding: 0 4px;
+    gap: 3px;
+    font-size: 9px;
+    letter-spacing: 0;
+  }
+  .product-card .sup-dot {
+    width: 5px;
+    height: 5px;
+    flex-shrink: 0;
   }
   .sku {
     display: none;
   }
   .product-cat {
-    font-size: 10px;
-    line-height: 1.2;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    line-height: 1.15;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .product-name {
-    font-size: 12px;
-    line-height: 1.25;
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1.2;
     display: -webkit-box;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     overflow: hidden;
+    overflow-wrap: anywhere;
   }
   .product-dims {
     display: none;
   }
   .product-price {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-    padding-top: 2px;
-    font-size: 11px;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 0;
+    padding-top: 1px;
+    font-size: 10px;
   }
-  .dual-price strong {
-    font-size: 14px;
+  .product-price > div {
+    min-width: 0;
   }
-  .dual-price br {
+  .product-card .dual-price .muted,
+  .product-card .dual-price br,
+  .product-card .dual-price br ~ span {
     display: none;
   }
-  .dual-price br + span {
-    margin-left: 4px;
-    font-size: 10px;
-    opacity: 0.85;
+  .product-card .dual-price strong {
+    font-size: 12px;
+    letter-spacing: -0.02em;
+  }
+  .product-card .product-price .muted {
+    font-size: 9px;
   }
   .history-link {
     display: none;
   }
   .product-actions {
     flex-wrap: nowrap;
-    gap: 4px;
-    padding-top: 6px;
+    gap: 0;
+    padding-top: 4px;
   }
+  .product-actions > .spacer,
   .product-actions > .link-btn {
     display: none;
   }
   .product-actions .btn {
-    flex: 1;
+    flex: 1 1 auto;
+    width: 100%;
     min-width: 0;
-    height: 32px;
-    padding: 0 8px;
-    font-size: 12px;
+    height: 28px;
+    padding: 0 4px;
+    font-size: 11px;
   }
   .product-actions .qty {
-    flex: 1;
+    flex: 1 1 auto;
     justify-content: space-between;
     width: 100%;
-    height: 32px;
+    height: 28px;
+  }
+  .product-actions .qty button {
+    width: 22px;
+    font-size: 14px;
+  }
+  .product-actions .qty input {
+    width: 32px;
+    min-width: 0;
+    padding: 0;
+    font-size: 16px; /* iOS: avoid zoom on focus */
+    line-height: 1;
+    transform: scale(0.72);
   }
   .btn-label-full {
     display: none;
@@ -2150,16 +2211,20 @@ textarea:focus {
     display: none;
   }
   .product-grid {
-    gap: 5px;
+    gap: 4px;
   }
   .product-body {
-    padding: 5px 6px 7px;
+    padding: 4px 4px 5px;
   }
   .product-name {
-    font-size: 11.5px;
+    font-size: 10.5px;
   }
-  .dual-price strong {
-    font-size: 13px;
+  .product-card .dual-price strong {
+    font-size: 11px;
+  }
+  .product-actions .btn {
+    height: 26px;
+    font-size: 10.5px;
   }
   .sup-filter-btn .sup-badge.lg {
     height: 28px;

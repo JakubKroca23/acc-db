@@ -1519,8 +1519,9 @@ function emitPickMessage(payload: { type: string; token: string; item?: unknown 
 }
 
 function closePickWindow() {
+  // Popup / Tauri child window — zavřít i bez window.opener (BroadcastChannel pick).
   try {
-    if (window.opener && !window.opener.closed) window.close()
+    window.close()
   } catch {
     /* ignore */
   }
