@@ -1196,7 +1196,7 @@ function productCardHtml(p: Product): string {
                   <input type="number" min="0" value="${qty}" aria-label="Množství" />
                   <button type="button" data-inc aria-label="Zvýšit">+</button>
                 </div>`
-              : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}">Přidat do nabídky</button>`
+              : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}" aria-label="Přidat do nabídky"><span class="btn-label-full">Přidat do nabídky</span><span class="btn-label-short">Přidat</span></button>`
           }
           <span class="spacer"></span>
           ${
@@ -1392,6 +1392,17 @@ app.innerHTML = `
 
 const region = (name: string) => app.querySelector<HTMLElement>(`[data-region="${name}"]`)!
 const searchEl = app.querySelector<HTMLInputElement>('[data-global-search]')!
+const appHeaderEl = app.querySelector<HTMLElement>('.app-header')!
+
+function syncAppHeaderHeight() {
+  if (!appHeaderEl) return
+  document.documentElement.style.setProperty('--app-header-h', `${appHeaderEl.offsetHeight}px`)
+}
+syncAppHeaderHeight()
+if (typeof ResizeObserver !== 'undefined' && appHeaderEl) {
+  new ResizeObserver(() => syncAppHeaderHeight()).observe(appHeaderEl)
+}
+window.addEventListener('resize', syncAppHeaderHeight)
 
 function renderHeaderFilter() {
   /* supplier filter moved to clickable badges in content-head */
