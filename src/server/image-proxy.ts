@@ -28,6 +28,8 @@ const ALLOWED_HOSTS = new Set([
   'www.pavlinek.cz',
   'pavlinek.cz',
   'cdn.shopify.com',
+  'olejspol.cz',
+  'www.olejspol.cz',
 ])
 
 const MAX_BYTES = 6 * 1024 * 1024

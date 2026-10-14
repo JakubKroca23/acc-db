@@ -5,7 +5,7 @@
     {"id": "hasici-kit", "label": "Hasicí přístroje a držáky", "slugs": ["hasici-pristroj", "drzaky-hasicu"]},
     {"id": "voda-kit", "label": "Nádoby na vodu a držáky", "slugs": ["nadoba-na-vodu", "drzaky-kanystru"]},
     {"id": "podkladaci-kit", "label": "Podložky pod podpěry a boxy", "slugs": ["podkladaci-desky", "klece-na-podkladaci-desky"]},
-    {"id": "hydraulika-kit", "label": "Hydraulika", "slugs": ["cerpadlo", "olejova-nadrz", "hydraulicky-olej"]}
+    {"id": "hydraulika-kit", "label": "Hydraulika", "slugs": ["cerpadlo", "olejova-nadrz", "hydraulicky-olej", "prevodovy-olej"]}
   ],
   "accessories": [
     {"slug": "blatniky", "name": "Blatníky", "category": "Podvozek", "unit": "ks", "priceApprox": 1400, "sortOrder": 10, "parentSlug": null, "relatedGroup": "blatniky-kit"},
@@ -23,6 +23,7 @@
     {"slug": "uzivatelska-zasuvka", "name": "Uživatelská zásuvka", "category": "Podvozek", "unit": "ks", "priceApprox": 800, "sortOrder": 80, "parentSlug": null, "relatedGroup": null},
     {"slug": "cerpadlo", "name": "Čerpadlo", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 12000, "sortOrder": 110, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
     {"slug": "hydraulicky-olej", "name": "Hydraulický olej", "category": "Všechny nástavby", "unit": "L", "priceApprox": 95, "sortOrder": 120, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "prevodovy-olej", "name": "Převodový olej / ATF", "category": "Všechny nástavby", "unit": "L", "priceApprox": 150, "sortOrder": 125, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
     {"slug": "kamery", "name": "Kamery", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 5950, "sortOrder": 130, "parentSlug": null, "relatedGroup": null},
     {"slug": "olejova-nadrz", "name": "Olejová nádrž", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 15000, "sortOrder": 140, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
     {"slug": "pracovni-svetla", "name": "Pracovní světla", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 1440, "sortOrder": 150, "parentSlug": null, "relatedGroup": null},
@@ -174,5 +175,10 @@
     {"typeSlug": "ochrany-prislusenstvi", "handle": "ochrany-kusove"},
     {"typeSlug": "ochrany-prislusenstvi", "handle": "maziva-a-zalevaci-hmoty"},
     {"typeSlug": "ochrany-prislusenstvi", "handle": "site-a-big-bagy"}
+  ],
+  "olejspol": [
+    {"typeSlug": "hydraulicky-olej", "url": "https://olejspol.cz/produkty/prumyslove-oleje/hydraulicke-oleje"},
+    {"typeSlug": "prevodovy-olej", "url": "https://olejspol.cz/produkty/prevodove-oleje/nakladni-a-uzitkova-vozidla"},
+    {"typeSlug": "prevodovy-olej", "url": "https://olejspol.cz/produkty/prumyslove-oleje/prevodove-oleje"}
   ]
 }

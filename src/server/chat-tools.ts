@@ -33,7 +33,7 @@ export type CatalogData = {
 export type ToolEvent = { type: 'action'; name: string; args: Record<string, unknown>; label: string; product?: ToolProduct; prevQty?: number }
 export type ToolDef = { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }
 
-const SUPPLIERS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek'] as const
+const SUPPLIERS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol'] as const
 const CATEGORY_ORDER = ['Podvozek', 'Všechny nástavby', 'Hákový nosič kontejneru', 'Ostatní']
 
 export const READ_TOOLS = ['hledat_produkty', 'detail_produktu', 'seznam_kategorii', 'stav_nabidky'] as const
@@ -182,6 +182,7 @@ function supplierFrom(v: unknown): (typeof SUPPLIERS)[number] | null {
   if (s.includes('trans') || s === 'tt') return 'Trans-Technik'
   if (s.includes('hydro')) return 'Hydrotruck'
   if (s.includes('pavlinek') || s.includes('pavlínek')) return 'Pavlínek'
+  if (s.includes('olejspol')) return 'Olejspol'
   return null
 }
 
@@ -380,7 +381,7 @@ export function createChatTools(data: CatalogData | undefined) {
         case 'nastavit_filtr_dodavatele': {
           const all = norm(String(args.dodavatel ?? '')).startsWith('vsich')
           const sup = all ? '' : supplierFrom(args.dodavatel)
-          if (sup === null) return { chyba: 'Neznámý dodavatel. Možnosti: ALSAP, Trans-Technik, Hydrotruck, Pavlínek, vsichni.' }
+          if (sup === null) return { chyba: 'Neznámý dodavatel. Možnosti: ALSAP, Trans-Technik, Hydrotruck, Pavlínek, Olejspol, vsichni.' }
           emit({ type: 'action', name, args: { dodavatel: sup }, label: sup ? `🏷️ Filtr dodavatele: ${sup}` : '🏷️ Filtr dodavatele zrušen' })
           return { provedeno: true, filtr: sup || 'všichni dodavatelé' }
         }

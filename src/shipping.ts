@@ -57,6 +57,15 @@ export const SHIPPING_RATES: ShippingRate[] = [
     freeFromExVat: null,
     sourceUrl: 'https://www.pavlinek.cz',
   },
+  {
+    supplier: 'Olejspol',
+    label: 'PPL (dle e-shopu)',
+    priceExVat: Math.round(99 / 1.21),
+    priceVat: 99,
+    note: 'Doprava zdarma od 1 500 Kč s DPH (PPL). Osobní odběr Opava.',
+    freeFromExVat: Math.round(1500 / 1.21),
+    sourceUrl: 'https://olejspol.cz/doprava-a-platba/',
+  },
 ]
 
 /** Oversized / pallet-like accessory types → higher average freight. */

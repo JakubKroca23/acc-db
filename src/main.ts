@@ -207,7 +207,7 @@ let updateStatus: CatalogUpdateStatus | null = null
 let updateModalOpen = false
 /** Modal open before POST — user picks suppliers / cancel. */
 let updateAwaitingConfirm = false
-const UPDATE_SUPPLIER_OPTIONS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek'] as const
+const UPDATE_SUPPLIER_OPTIONS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol'] as const
 let updateSelectedSuppliers: string[] = [...UPDATE_SUPPLIER_OPTIONS]
 let updatePolling: number | undefined
 let toastMsg = ''
@@ -1051,11 +1051,12 @@ function startUpdatePolling() {
 }
 
 // ── supplier colours & images ─────────────────────────────────────
-/** Stable CSS modifier for a supplier — ALSAP red, TT blue, HT green, Pavlínek amber. */
+/** Stable CSS modifier for a supplier — ALSAP / TT / HT / Pavlínek / Olejspol. */
 function supplierKey(supplier: string): string {
   const s = supplier.toLocaleLowerCase('cs')
   if (s.includes('alsap')) return 'alsap'
   if (s.includes('trans')) return 'tt'
+  if (s.includes('olejspol')) return 'olej'
   if (s.includes('hydro')) return 'ht'
   if (s.includes('pavlínek') || s.includes('pavlinek')) return 'pav'
   return 'other'
@@ -1349,6 +1350,11 @@ function productCardHtml(p: Product): string {
           ${
             p.productUrl
               ? `<a class="link-btn" href="${escapeAttr(p.productUrl)}" target="_blank" rel="noopener noreferrer">Detail ↗</a>`
+              : ''
+          }
+          ${
+            p.datasheetUrl
+              ? `<a class="link-btn" href="${escapeAttr(p.datasheetUrl)}" target="_blank" rel="noopener noreferrer">Technický list ↗</a>`
               : ''
           }
         </div>

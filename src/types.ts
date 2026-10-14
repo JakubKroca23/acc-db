@@ -33,6 +33,7 @@ export interface Product {
   productUrl: string | null
   sku: string | null
   note: string | null
+  datasheetUrl?: string | null
 }
 
 export interface CartLine {

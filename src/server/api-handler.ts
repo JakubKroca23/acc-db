@@ -109,6 +109,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       productUrl: (row.productUrl as string) || null,
       sku: (row.sku as string) || null,
       note: (row.note as string) || null,
+      datasheetUrl: (row.datasheetUrl as string) || null,
     }
   }
 
@@ -140,6 +141,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         productUrl?: string | null
         sku?: string | null
         note?: string | null
+        datasheetUrl?: string | null
       }[]
       products = items
         .filter((p) => p.typeSlug !== 'zadni-zabrana')
@@ -158,6 +160,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
             productUrl: p.productUrl || null,
             sku: p.sku || null,
             note: p.note || null,
+            datasheetUrl: p.datasheetUrl || null,
           }
         })
     } catch {

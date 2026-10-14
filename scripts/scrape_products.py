@@ -10,6 +10,7 @@ Fixes vs first version:
 - Hydrotruck: ?str=PAGE pagination + insecure-SSL fallback; pad/holder reclassify
 - ALSAP product pages that are a size/option group (JSON-LD hasVariant) become one row per option
 - Pavlínek: /products.json dump + collection ID map; long 429 cooldown (prices ex VAT)
+- Olejspol: Shopware listing HTML (?p= pagination); sequential + 429 backoff; EXEL datasheet map
 """
 from __future__ import annotations
 
@@ -1008,9 +1009,240 @@ def expand_alsap_variants(items: list[dict]) -> list[dict]:
     return rest + out
 
 
+# ── Olejspol (Shopware) ────────────────────────────────────────────
+OLEJSPOL_BASE = "https://olejspol.cz"
+_olej_gap_s = 1.2
+_olej_429_streak = 0
+_OLEJ_HEADERS = {
+    **UA,
+    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "cs-CZ,cs;q=0.9,en;q=0.8",
+    "Referer": f"{OLEJSPOL_BASE}/",
+}
+
+
+def get_olej(url: str, retries: int = 8) -> str:
+    """Olejspol HTML — polite gap + long 429 cooldown (Pavlínek lesson)."""
+    global _olej_gap_s, _olej_429_streak
+    from urllib.error import HTTPError
+
+    last: Exception | None = None
+    for i in range(retries):
+        time.sleep(_olej_gap_s)
+        try:
+            req = Request(url, headers=_OLEJ_HEADERS)
+            with urlopen(req, timeout=45) as r:
+                data = r.read().decode("utf-8", "ignore")
+            _olej_429_streak = 0
+            _olej_gap_s = max(1.0, _olej_gap_s * 0.98)
+            return data
+        except HTTPError as e:
+            last = e
+            if e.code == 429:
+                _olej_429_streak += 1
+                _olej_gap_s = min(8.0, max(2.0, _olej_gap_s + 1.0))
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    ra = float(retry_after) if retry_after else 0.0
+                except ValueError:
+                    ra = 0.0
+                wait = max(ra, min(120.0, 20.0 * (1.5 ** min(i, 5))))
+                emit_progress(
+                    f"Olejspol 429 #{_olej_429_streak} — čekám {wait:.0f}s "
+                    f"(Retry-After={retry_after or '—'}, gap→{_olej_gap_s:.1f}s)"
+                )
+                time.sleep(wait)
+                continue
+            time.sleep(1.5 * (i + 1))
+        except Exception as e:
+            last = e
+            time.sleep(1.5 * (i + 1))
+    raise last  # type: ignore
+
+
+def _olej_parse_czk(text: str) -> float | None:
+    m = re.search(r"(\d[\d\s]*)([.,]\d{2})\s*Kč", text.replace("\xa0", " "))
+    if not m:
+        return None
+    whole = m.group(1).replace(" ", "")
+    frac = m.group(2).replace(",", ".")
+    try:
+        return float(whole + frac)
+    except ValueError:
+        return None
+
+
+def _olej_load_datasheets() -> list[tuple[str, str]]:
+    path = ROOT / "exel-datasheets.json"
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = [(norm(k).casefold(), v) for k, v in raw.items() if isinstance(v, str) and v.startswith("http")]
+    items.sort(key=lambda kv: len(kv[0]), reverse=True)
+    return items
+
+
+def _olej_datasheet(name: str, brand: str | None, sheets: list[tuple[str, str]]) -> str | None:
+    blob = f"{brand or ''} {name}".casefold()
+    if "exel" not in blob:
+        return None
+    for key, url in sheets:
+        if key in blob:
+            return url
+    return "https://www.exel.cz/produkty-exel/industry/hydraulicke-oleje/"
+
+
+def _olej_parse_card(card: str, type_slug: str, sheets: list[tuple[str, str]]) -> dict | None:
+    info_m = re.search(r'data-product-information="(\{[^"]+\})"', card)
+    name = ""
+    brand = None
+    sku = None
+    if info_m:
+        try:
+            info = json.loads(htmlmod.unescape(info_m.group(1)))
+            name = norm(str(info.get("name") or ""))
+            brand = norm(str(info.get("brand") or "")) or None
+            sku = str(info.get("sku") or "").strip() or None
+        except Exception:
+            pass
+    link_m = re.search(
+        r'class="product-name[^"]*"[^>]*>\s*<a\s+href="(https://olejspol\.cz/[^"]+)"[^>]*title="([^"]*)"',
+        card,
+        re.I | re.S,
+    ) or re.search(
+        r'<a\s+href="(https://olejspol\.cz/[^"]+/\d+)"[^>]*class="product-name',
+        card,
+        re.I,
+    ) or re.search(r'href="(https://olejspol\.cz/[a-z0-9\-]+/\d+)"', card, re.I)
+    product_url = None
+    if link_m:
+        product_url = link_m.group(1).split("?")[0]
+        if not name and link_m.lastindex and link_m.lastindex >= 2:
+            name = norm(link_m.group(2))
+    if not name:
+        hn = re.search(r'class="product-name[^"]*"[^>]*>([^<]+)<', card, re.I)
+        if hn:
+            name = norm(hn.group(1))
+    if not name or not product_url:
+        return None
+
+    price_ex = None
+    # Nested spans inside price — match Kč near bez-DPH / s-DPH labels
+    ex_m = re.search(
+        r'product-price-without-vat[^>]*>[\s\S]{0,400}?(\d[\d\s]*[.,]\d{2})\s*Kč',
+        card,
+        re.I,
+    )
+    if ex_m:
+        price_ex = _olej_parse_czk(ex_m.group(1) + " Kč")
+    if price_ex is None:
+        vat_m = re.search(
+            r'product-price-with-vat[^>]*>[\s\S]{0,400}?(\d[\d\s]*[.,]\d{2})\s*Kč',
+            card,
+            re.I,
+        )
+        if vat_m:
+            pv = _olej_parse_czk(vat_m.group(1) + " Kč")
+            if pv is not None:
+                price_ex = round(pv / VAT, 2)
+    if price_ex is None or price_ex <= 0:
+        return None
+
+    img = pick_img(card, OLEJSPOL_BASE)
+    dims = dims_from_text(name)
+    # volume options often listed as 5L / 10L — note cheapest listing pack size if present
+    vol = re.search(r"\b(\d+)\s*L\b", card)
+    if vol and not dims:
+        dims = f"od {vol.group(1)} L"
+
+    return {
+        "name": name[:220],
+        "price": round(price_ex, 2),
+        "priceVat": round(price_ex * VAT, 2),
+        "imageUrl": img,
+        "productUrl": product_url,
+        "dimensions": dims,
+        "supplier": "Olejspol",
+        "typeSlug": type_slug,
+        "unit": "L",
+        "sku": sku,
+        "datasheetUrl": _olej_datasheet(name, brand, sheets),
+        "note": brand,
+    }
+
+
+def parse_olejspol_list(url: str, type_slug: str, sheets: list[tuple[str, str]], max_pages: int = 12) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    for page in range(1, max_pages + 1):
+        page_url = url if page == 1 else (f"{url}?p={page}" if "?" not in url else f"{url}&p={page}")
+        try:
+            html = get_olej(page_url)
+        except Exception as e:
+            emit_progress(f"Olejspol ERR {type_slug} p={page}: {e}")
+            break
+        cards = re.split(r'<div class="card product-box\b', html)[1:]
+        if not cards:
+            if page == 1:
+                emit_progress(f"Olejspol empty listing {type_slug}")
+            break
+        n_before = len(out)
+        for raw in cards:
+            card = '<div class="card product-box' + raw
+            row = _olej_parse_card(card, type_slug, sheets)
+            if not row:
+                continue
+            key = row["productUrl"]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+        emit_progress(f"Olejspol {type_slug} p={page}: +{len(out) - n_before} (Σ {len(out)})")
+        if len(out) == n_before:
+            break
+        # stop if pagination has no higher page
+        pages = [int(x) for x in re.findall(r"[?&]p=(\d+)", html)]
+        if pages and page >= max(pages):
+            break
+    return out
+
+
+def scrape_olejspol(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
+    global _olej_gap_s, _olej_429_streak
+    _olej_gap_s = 1.2
+    _olej_429_streak = 0
+    sheets = _olej_load_datasheets()
+    entries = [e for e in (cmap.get("olejspol") or []) if e.get("url") and e.get("typeSlug")]
+    emit_progress(f"Olejspol: {len(entries)} kategorií (gap ~{_olej_gap_s:.1f}s, 429 cooldown)")
+    items: list[dict] = []
+    failed: set[tuple[str, str]] = set()
+    for i, e in enumerate(entries, 1):
+        slug, url = e["typeSlug"], e["url"].rstrip("/")
+        emit_progress(f"Olejspol [{i}/{len(entries)}] {slug} ← {url.split('/')[-1]}")
+        try:
+            rows = parse_olejspol_list(url, slug, sheets, max_pages=int(e.get("maxPages", 12)))
+            items.extend(rows)
+            if not rows:
+                failed.add(("Olejspol", slug))
+        except Exception as err:
+            failed.add(("Olejspol", slug))
+            emit_progress(f"Olejspol ERR {slug}: {err}")
+            time.sleep(15.0)
+    # dedupe by productUrl — first typeSlug wins
+    by_url: dict[str, dict] = {}
+    for p in items:
+        u = p.get("productUrl") or ""
+        if u and u not in by_url:
+            by_url[u] = p
+    return list(by_url.values()), failed
+
+
 def scrape_enabled_suppliers() -> set[str]:
     """SCRAPE_SUPPLIERS=ALSAP,Pavlínek (comma) or SKIP_PAVLINEK=1 legacy. Empty = all."""
-    all_sup = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek"}
+    all_sup = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek", "Olejspol"}
     raw = (os.environ.get("SCRAPE_SUPPLIERS") or "").strip()
     if raw:
         aliases = {
@@ -1025,6 +1257,8 @@ def scrape_enabled_suppliers() -> set[str]:
             "pav": "Pavlínek",
             "pavlinek": "Pavlínek",
             "pavlínek": "Pavlínek",
+            "olej": "Olejspol",
+            "olejspol": "Olejspol",
         }
         out: set[str] = set()
         for part in raw.split(","):
@@ -1157,8 +1391,25 @@ def main() -> None:
     else:
         emit_progress("=== Pavlínek přeskočen ===")
 
+    # Olejspol (Shopware HTML) — sequential + 429 backoff
+    if "Olejspol" in enabled:
+        emit_progress("=== Olejspol ===")
+        try:
+            olej, olej_failed = scrape_olejspol(cmap)
+            all_items.extend(olej)
+            failed |= olej_failed
+            emit_progress(
+                f"Olejspol total unique: {len(olej)}"
+                + (f" · failed types {len(olej_failed)}" if olej_failed else "")
+            )
+        except Exception as e:
+            failed.add(("Olejspol", "*"))
+            emit_progress(f"Olejspol ERR: {e}")
+    else:
+        emit_progress("=== Olejspol přeskočen ===")
+
     # Keep last scrape for suppliers we did not run this time (partial update).
-    skipped = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek"} - enabled
+    skipped = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek", "Olejspol"} - enabled
     if skipped and OUT.exists():
         try:
             prev = json.loads(OUT.read_text(encoding="utf-8"))
