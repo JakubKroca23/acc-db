@@ -1269,9 +1269,184 @@ def scrape_olejspol(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
     return list(by_url.values()), failed
 
 
+# ── Hydrolider (Shoper) ────────────────────────────────────────────
+HYDROLIDER_BASE = "https://hydrolider.cz"
+_hl_gap_s = 1.2
+_hl_429_streak = 0
+_HL_HEADERS = {
+    **UA,
+    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "cs-CZ,cs;q=0.9",
+    "Referer": f"{HYDROLIDER_BASE}/",
+}
+# Zemědělské speciality (Ursus/Zetor/rozmetadla…) — mimo nástavby.
+_HL_SKIP = re.compile(
+    r"ursus|zetor|rozmetad|mláti|mlati|přívěs|prives|secí|seci|amazone|brzeg|"
+    r"c-360|c-330|c-328|bočnic|bocnic|zeměděl|zemedels|traktor",
+    re.I,
+)
+
+
+def get_hl(url: str, retries: int = 8) -> str:
+    """Hydrolider HTML — polite gap + long 429 cooldown."""
+    global _hl_gap_s, _hl_429_streak
+    from urllib.error import HTTPError
+
+    last: Exception | None = None
+    for i in range(retries):
+        time.sleep(_hl_gap_s)
+        try:
+            req = Request(url, headers=_HL_HEADERS)
+            with urlopen(req, timeout=45) as r:
+                data = r.read().decode("utf-8", "ignore")
+            _hl_429_streak = 0
+            _hl_gap_s = max(1.0, _hl_gap_s * 0.98)
+            return data
+        except HTTPError as e:
+            last = e
+            if e.code == 429:
+                _hl_429_streak += 1
+                _hl_gap_s = min(8.0, max(2.0, _hl_gap_s + 1.0))
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    ra = float(retry_after) if retry_after else 0.0
+                except ValueError:
+                    ra = 0.0
+                wait = max(ra, min(120.0, 20.0 * (1.5 ** min(i, 5))))
+                emit_progress(
+                    f"Hydrolider 429 #{_hl_429_streak} — čekám {wait:.0f}s "
+                    f"(Retry-After={retry_after or '—'}, gap→{_hl_gap_s:.1f}s)"
+                )
+                time.sleep(wait)
+                continue
+            time.sleep(1.5 * (i + 1))
+        except Exception as e:
+            last = e
+            time.sleep(1.5 * (i + 1))
+    raise last  # type: ignore
+
+
+def _hl_parse_czk(text: str) -> float | None:
+    m = re.search(r"(\d[\d\s]*)([.,]\d{2})", text.replace("\xa0", " "))
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(" ", "") + m.group(2).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def _hl_parse_card(card: str, type_slug: str) -> dict | None:
+    name_m = re.search(r'class="productname"[^>]*>([^<]+)', card, re.I)
+    href_m = re.search(r'href="(/cs_CZ/p/[^"]+)"', card, re.I)
+    if not name_m or not href_m:
+        return None
+    name = norm(name_m.group(1))
+    cat_m = re.search(r'data-category="([^"]*)"', card)
+    category = norm(cat_m.group(1)) if cat_m else ""
+    if _HL_SKIP.search(name) or _HL_SKIP.search(category):
+        return None
+    price_m = re.search(r'class="price-netto"[\s\S]{0,250}?<em>([^<]+)</em>', card, re.I)
+    price_ex = _hl_parse_czk(price_m.group(1)) if price_m else None
+    if price_ex is None or price_ex <= 0:
+        return None
+    sku_m = re.search(r"Katalogové číslo:</span>\s*<span[^>]*>([^<]+)", card, re.I)
+    sku = norm(sku_m.group(1)) if sku_m else None
+    img_m = re.search(r'data-src="([^"]+)"', card, re.I) or re.search(
+        r'<noscript>\s*<img[^>]+src="([^"]+)"', card, re.I
+    )
+    image = None
+    if img_m:
+        image = urljoin(HYDROLIDER_BASE, htmlmod.unescape(img_m.group(1)))
+        if image.startswith("data:"):
+            image = None
+    return {
+        "name": name[:220],
+        "price": round(price_ex, 2),
+        "priceVat": round(price_ex * VAT, 2),
+        "imageUrl": image,
+        "productUrl": urljoin(HYDROLIDER_BASE, href_m.group(1).split("?")[0]),
+        "dimensions": dims_from_text(name),
+        "supplier": "Hydrolider",
+        "typeSlug": type_slug,
+        "unit": "ks",
+        "sku": sku or None,
+        "note": category or None,
+    }
+
+
+def parse_hydrolider_list(url: str, type_slug: str, max_pages: int = 20) -> list[dict]:
+    out: list[dict] = []
+    seen: set[str] = set()
+    root = url.rstrip("/")
+    for page in range(1, max_pages + 1):
+        page_url = root if page == 1 else f"{root}/{page}"
+        try:
+            html = get_hl(page_url)
+        except Exception as e:
+            emit_progress(f"Hydrolider ERR {type_slug} p={page}: {e}")
+            break
+        cards = re.split(r'<div data-product-id="', html)[1:]
+        if not cards:
+            break
+        n_before = len(out)
+        skipped = 0
+        for raw in cards:
+            card = '<div data-product-id="' + raw
+            row = _hl_parse_card(card, type_slug)
+            if row is None:
+                if _HL_SKIP.search(raw[:800]):
+                    skipped += 1
+                continue
+            key = row["productUrl"]
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(row)
+        emit_progress(
+            f"Hydrolider {type_slug} p={page}: +{len(out) - n_before} (Σ {len(out)}, skip agri ~{skipped})"
+        )
+        if len(out) == n_before and skipped == 0:
+            break
+        pages = [int(x) for x in re.findall(rf"{re.escape(urlparse(root).path)}/(\d+)", html)]
+        if pages and page >= max(pages):
+            break
+        if not pages and page > 1:
+            break
+    return out
+
+
+def scrape_hydrolider(cmap: dict) -> tuple[list[dict], set[tuple[str, str]]]:
+    global _hl_gap_s, _hl_429_streak
+    _hl_gap_s = 1.2
+    _hl_429_streak = 0
+    entries = [e for e in (cmap.get("hydrolider") or []) if e.get("url") and e.get("typeSlug")]
+    emit_progress(f"Hydrolider: {len(entries)} kategorií (gap ~{_hl_gap_s:.1f}s)")
+    items: list[dict] = []
+    failed: set[tuple[str, str]] = set()
+    for i, e in enumerate(entries, 1):
+        slug, url = e["typeSlug"], e["url"].rstrip("/")
+        emit_progress(f"Hydrolider [{i}/{len(entries)}] {slug}")
+        try:
+            rows = parse_hydrolider_list(url, slug, max_pages=int(e.get("maxPages", 20)))
+            items.extend(rows)
+            if not rows:
+                failed.add(("Hydrolider", slug))
+        except Exception as err:
+            failed.add(("Hydrolider", slug))
+            emit_progress(f"Hydrolider ERR {slug}: {err}")
+            time.sleep(15.0)
+    by_url: dict[str, dict] = {}
+    for p in items:
+        u = p.get("productUrl") or ""
+        if u and u not in by_url:
+            by_url[u] = p
+    return list(by_url.values()), failed
+
+
 def scrape_enabled_suppliers() -> set[str]:
     """SCRAPE_SUPPLIERS=ALSAP,Pavlínek (comma) or SKIP_PAVLINEK=1 legacy. Empty = all."""
-    all_sup = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek", "Olejspol"}
+    all_sup = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek", "Olejspol", "Hydrolider"}
     raw = (os.environ.get("SCRAPE_SUPPLIERS") or "").strip()
     if raw:
         aliases = {
@@ -1288,6 +1463,8 @@ def scrape_enabled_suppliers() -> set[str]:
             "pavlínek": "Pavlínek",
             "olej": "Olejspol",
             "olejspol": "Olejspol",
+            "hl": "Hydrolider",
+            "hydrolider": "Hydrolider",
         }
         out: set[str] = set()
         for part in raw.split(","):
@@ -1437,8 +1614,24 @@ def main() -> None:
     else:
         emit_progress("=== Olejspol přeskočen ===")
 
+    if "Hydrolider" in enabled:
+        emit_progress("=== Hydrolider ===")
+        try:
+            hl, hl_failed = scrape_hydrolider(cmap)
+            all_items.extend(hl)
+            failed |= hl_failed
+            emit_progress(
+                f"Hydrolider total unique: {len(hl)}"
+                + (f" · failed types {len(hl_failed)}" if hl_failed else "")
+            )
+        except Exception as e:
+            failed.add(("Hydrolider", "*"))
+            emit_progress(f"Hydrolider ERR: {e}")
+    else:
+        emit_progress("=== Hydrolider přeskočen ===")
+
     # Keep last scrape for suppliers we did not run this time (partial update).
-    skipped = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek", "Olejspol"} - enabled
+    skipped = {"ALSAP", "Trans-Technik", "Hydrotruck", "Pavlínek", "Olejspol", "Hydrolider"} - enabled
     if skipped and OUT.exists():
         try:
             prev = json.loads(OUT.read_text(encoding="utf-8"))

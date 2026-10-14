@@ -30,6 +30,8 @@ const ALLOWED_HOSTS = new Set([
   'cdn.shopify.com',
   'olejspol.cz',
   'www.olejspol.cz',
+  'hydrolider.cz',
+  'www.hydrolider.cz',
 ])
 
 const MAX_BYTES = 6 * 1024 * 1024

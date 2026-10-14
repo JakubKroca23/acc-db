@@ -66,6 +66,15 @@ export const SHIPPING_RATES: ShippingRate[] = [
     freeFromExVat: Math.round(1500 / 1.21),
     sourceUrl: 'https://olejspol.cz/doprava-a-platba/',
   },
+  {
+    supplier: 'Hydrolider',
+    label: 'Přepravní služba (odhad)',
+    priceExVat: 149,
+    priceVat: Math.round(149 * 1.21),
+    note: 'Hydrolider neuvádí veřejný ceník dopravy; odhad balíku. Válce a motory často nadrozměr.',
+    freeFromExVat: null,
+    sourceUrl: 'https://hydrolider.cz/',
+  },
 ]
 
 /** Oversized / pallet-like accessory types → higher average freight. */
@@ -78,6 +87,8 @@ const OVERSIZE_TYPES = new Set([
   'zadni-zabrana',
   'metraz-lana-retezy',
   'zvedaci-technika',
+  'hydraulicky-valec',
+  'hydraulicky-motor',
 ])
 
 const OVERSIZE_EX_VAT = 289 // ~ TOPTRANS mid + half-pallet feel

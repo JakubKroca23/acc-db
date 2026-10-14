@@ -5,7 +5,7 @@
     {"id": "hasici-kit", "label": "Hasicí přístroje a držáky", "slugs": ["hasici-pristroj", "drzaky-hasicu"]},
     {"id": "voda-kit", "label": "Nádoby na vodu a držáky", "slugs": ["nadoba-na-vodu", "drzaky-kanystru"]},
     {"id": "podkladaci-kit", "label": "Podložky pod podpěry a boxy", "slugs": ["podkladaci-desky", "klece-na-podkladaci-desky"]},
-    {"id": "hydraulika-kit", "label": "Hydraulika", "slugs": ["cerpadlo", "olejova-nadrz", "hydraulicky-olej", "prevodovy-olej"]}
+    {"id": "hydraulika-kit", "label": "Hydraulika", "slugs": ["cerpadlo", "olejova-nadrz", "hydraulicky-olej", "prevodovy-olej", "hydraulicky-valec", "hydraulicky-rozvadec", "hydraulicky-ventil", "hydraulicky-motor", "hydraulicka-hadice", "hydraulicke-sroubeni", "hydraulicky-filtr", "chladic-oleje"]}
   ],
   "accessories": [
     {"slug": "blatniky", "name": "Blatníky", "category": "Podvozek", "unit": "ks", "priceApprox": 1400, "sortOrder": 10, "parentSlug": null, "relatedGroup": "blatniky-kit"},
@@ -37,7 +37,15 @@
     {"slug": "metraz-lana-retezy", "name": "Metráž — lana a řetězy", "category": "Ostatní", "unit": "m", "priceApprox": 150, "sortOrder": 250, "parentSlug": null, "relatedGroup": null},
     {"slug": "zvedaci-technika", "name": "Zvedací a manipulační technika", "category": "Ostatní", "unit": "ks", "priceApprox": 8000, "sortOrder": 260, "parentSlug": null, "relatedGroup": null},
     {"slug": "zajisteni-osob", "name": "Zajištění osob", "category": "Ostatní", "unit": "ks", "priceApprox": 1500, "sortOrder": 270, "parentSlug": null, "relatedGroup": null},
-    {"slug": "ochrany-prislusenstvi", "name": "Ochrany a příslušenství", "category": "Ostatní", "unit": "ks", "priceApprox": 300, "sortOrder": 280, "parentSlug": null, "relatedGroup": null}
+    {"slug": "ochrany-prislusenstvi", "name": "Ochrany a příslušenství", "category": "Ostatní", "unit": "ks", "priceApprox": 300, "sortOrder": 280, "parentSlug": null, "relatedGroup": null},
+    {"slug": "hydraulicky-valec", "name": "Hydraulický válec", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 3500, "sortOrder": 141, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "hydraulicky-rozvadec", "name": "Hydraulický rozvaděč", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 4000, "sortOrder": 142, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "hydraulicky-ventil", "name": "Hydraulický ventil", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 800, "sortOrder": 143, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "hydraulicky-motor", "name": "Hydraulický motor", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 6000, "sortOrder": 144, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "hydraulicka-hadice", "name": "Hydraulická hadice", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 400, "sortOrder": 145, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "hydraulicke-sroubeni", "name": "Hydraulické šroubení", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 80, "sortOrder": 146, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "hydraulicky-filtr", "name": "Hydraulický filtr", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 350, "sortOrder": 147, "parentSlug": null, "relatedGroup": "hydraulika-kit"},
+    {"slug": "chladic-oleje", "name": "Chladič oleje", "category": "Všechny nástavby", "unit": "ks", "priceApprox": 2500, "sortOrder": 148, "parentSlug": null, "relatedGroup": "hydraulika-kit"}
   ],
   "alsap": [
     {"typeSlug": "blatniky", "url": "https://www.alsap.cz/plastove-blatniky-pro-nakladni-a-uzitkova-vozidla-c942/"},
@@ -180,5 +188,17 @@
     {"typeSlug": "hydraulicky-olej", "url": "https://olejspol.cz/produkty/prumyslove-oleje/hydraulicke-oleje"},
     {"typeSlug": "prevodovy-olej", "url": "https://olejspol.cz/produkty/prevodove-oleje/nakladni-a-uzitkova-vozidla"},
     {"typeSlug": "prevodovy-olej", "url": "https://olejspol.cz/produkty/prumyslove-oleje/prevodove-oleje"}
+  ],
+  "hydrolider": [
+    {"typeSlug": "hydraulicky-valec", "url": "https://hydrolider.cz/hydraulicke-valce", "maxPages": 40},
+    {"typeSlug": "hydraulicky-rozvadec", "url": "https://hydrolider.cz/hydraulicke-rozvadece", "maxPages": 20},
+    {"typeSlug": "hydraulicky-ventil", "url": "https://hydrolider.cz/hydraulicke-ventily", "maxPages": 20},
+    {"typeSlug": "hydraulicky-motor", "url": "https://hydrolider.cz/hydraulicke-motory", "maxPages": 20},
+    {"typeSlug": "cerpadlo", "url": "https://hydrolider.cz/hydraulicke-cerpadla", "maxPages": 20},
+    {"typeSlug": "olejova-nadrz", "url": "https://hydrolider.cz/olejove-nadrze", "maxPages": 15},
+    {"typeSlug": "hydraulicka-hadice", "url": "https://hydrolider.cz/hydraulicke-hadice", "maxPages": 20},
+    {"typeSlug": "hydraulicke-sroubeni", "url": "https://hydrolider.cz/hydraulicka-sroubeni", "maxPages": 30},
+    {"typeSlug": "hydraulicky-filtr", "url": "https://hydrolider.cz/cs_CZ/c/Hydraulicke-filtry/1430", "maxPages": 15},
+    {"typeSlug": "chladic-oleje", "url": "https://hydrolider.cz/chladice-oleje", "maxPages": 10}
   ]
 }

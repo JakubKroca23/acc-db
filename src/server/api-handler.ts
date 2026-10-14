@@ -66,7 +66,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
     const tablesDB = new TablesDB(client())
     const all: Record<string, unknown>[] = []
     let cursor: string | undefined
-    for (let page = 0; page < 40; page++) {
+    for (let page = 0; page < 120; page++) {
       const queries = [...extraQueries, Query.limit(100)]
       if (cursor) queries.push(Query.cursorAfter(cursor))
       const result = await tablesDB.listRows({ databaseId, tableId, queries })

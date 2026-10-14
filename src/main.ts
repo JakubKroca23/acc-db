@@ -207,7 +207,7 @@ let updateStatus: CatalogUpdateStatus | null = null
 let updateModalOpen = false
 /** Modal open before POST — user picks suppliers / cancel. */
 let updateAwaitingConfirm = false
-const UPDATE_SUPPLIER_OPTIONS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol'] as const
+const UPDATE_SUPPLIER_OPTIONS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol', 'Hydrolider'] as const
 let updateSelectedSuppliers: string[] = [...UPDATE_SUPPLIER_OPTIONS]
 let updatePolling: number | undefined
 let toastMsg = ''
@@ -1057,6 +1057,7 @@ function supplierKey(supplier: string): string {
   if (s.includes('alsap')) return 'alsap'
   if (s.includes('trans')) return 'tt'
   if (s.includes('olejspol')) return 'olej'
+  if (s.includes('hydrolider')) return 'hl'
   if (s.includes('hydro')) return 'ht'
   if (s.includes('pavlínek') || s.includes('pavlinek')) return 'pav'
   return 'other'

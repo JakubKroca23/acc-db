@@ -78,6 +78,7 @@ const SUPPLIER_NAME: Record<string, string> = {
   hydrotruck: 'Hydrotruck',
   pavlinek: 'Pavlínek',
   olejspol: 'Olejspol',
+  hydrolider: 'Hydrolider',
   vsichni: 'vsichni',
 }
 const SUPPLIER_IDS = Object.keys(SUPPLIER_NAME)

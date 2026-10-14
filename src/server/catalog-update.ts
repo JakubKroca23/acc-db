@@ -29,7 +29,7 @@ export type CatalogUpdateOptions = {
   skipPavlinek?: boolean
 }
 
-const ALL_SUPPLIERS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol'] as const
+const ALL_SUPPLIERS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol', 'Hydrolider'] as const
 
 function resolveSuppliers(opts: CatalogUpdateOptions): string[] {
   if (opts.suppliers?.length) {
