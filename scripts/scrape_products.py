@@ -1152,16 +1152,18 @@ def _olej_parse_card(card: str, type_slug: str, sheets: list[tuple[str, str]]) -
         return None
 
     img = pick_img(card, OLEJSPOL_BASE)
-    dims = dims_from_text(name)
-    # volume options often listed as 5L / 10L — note cheapest listing pack size if present
-    vol = re.search(r"\b(\d+)\s*L\b", card)
-    if vol and not dims:
-        dims = f"od {vol.group(1)} L"
-
+    # Listing „Od … Kč“ = cena nejlevnějšího balení (obvykle nejmenší litráž), ne Kč/L.
+    pack_liters = _olej_pack_liters(card)
+    if not pack_liters or pack_liters <= 0:
+        return None
+    price_per_l = price_ex / pack_liters
+    dims = f"přepočet z {pack_liters:g} L balení ({price_ex:g} Kč)"
+    note_parts = [brand] if brand else []
+    note_parts.append(f"balení od {pack_liters:g} L")
     return {
         "name": name[:220],
-        "price": round(price_ex, 2),
-        "priceVat": round(price_ex * VAT, 2),
+        "price": round(price_per_l, 2),
+        "priceVat": round(price_per_l * VAT, 2),
         "imageUrl": img,
         "productUrl": product_url,
         "dimensions": dims,
@@ -1170,8 +1172,35 @@ def _olej_parse_card(card: str, type_slug: str, sheets: list[tuple[str, str]]) -
         "unit": "L",
         "sku": sku,
         "datasheetUrl": _olej_datasheet(name, brand, sheets),
-        "note": brand,
+        "note": " · ".join(note_parts) if note_parts else None,
+        "packLiters": pack_liters,
+        "packPrice": round(price_ex, 2),
     }
+
+
+def _olej_pack_liters(card: str) -> float | None:
+    """Litráž balení, ke kterému patří listing „Od“ cena (= min. nabízený objem)."""
+    vols: list[float] = []
+    # Volume switcher buttons: 5L, 20L, 60 L ( 3 x 20 L), 208L…
+    for raw in re.findall(
+        r'data-switch-link[^>]*>\s*([^<]+?)\s*<',
+        card,
+        re.I,
+    ):
+        label = norm(raw)
+        m = re.match(r"^(\d+(?:[.,]\d+)?)\s*L\b", label, re.I)
+        if m:
+            try:
+                vols.append(float(m.group(1).replace(",", ".")))
+            except ValueError:
+                pass
+    if not vols:
+        for m in re.finditer(r">(\d+(?:[.,]\d+)?)\s*L(?:\s*<|\s*\()", card, re.I):
+            try:
+                vols.append(float(m.group(1).replace(",", ".")))
+            except ValueError:
+                pass
+    return min(vols) if vols else None
 
 
 def parse_olejspol_list(url: str, type_slug: str, sheets: list[tuple[str, str]], max_pages: int = 12) -> list[dict]:

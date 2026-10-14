@@ -1342,7 +1342,8 @@ function productCardHtml(p: Product): string {
               : qty
               ? `<div class="qty" data-qty="${escapeAttr(p.id)}">
                   <button type="button" data-dec aria-label="Snížit">−</button>
-                  <input type="number" min="0" value="${qty}" aria-label="Množství" />
+                  <input type="number" min="0" step="${p.unit === 'L' ? '1' : '1'}" value="${qty}" aria-label="${p.unit === 'L' ? 'Litry' : 'Množství'}" title="${p.unit === 'L' ? 'Množství v litrech' : 'Množství'}" />
+                  <span class="qty-unit muted" aria-hidden="true">${escapeHtml(p.unit)}</span>
                   <button type="button" data-inc aria-label="Zvýšit">+</button>
                 </div>`
               : `<button class="btn btn-primary" type="button" data-add="${escapeAttr(p.id)}" aria-label="Přidat do nabídky"><span class="btn-label-full">Přidat</span><span class="btn-label-short">Přidat</span></button>`

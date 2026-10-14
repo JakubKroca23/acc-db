@@ -1179,6 +1179,13 @@ textarea:focus {
   -moz-appearance: textfield;
 }
 
+.qty .qty-unit {
+  font-size: 11px;
+  font-weight: 600;
+  padding-right: 4px;
+  user-select: none;
+}
+
 .qty input::-webkit-outer-spin-button,
 .qty input::-webkit-inner-spin-button {
   -webkit-appearance: none;
