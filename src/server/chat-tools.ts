@@ -231,8 +231,9 @@ export function createChatTools(data: CatalogData | undefined) {
       dodavatel: p.supplier,
       kategorie: catName(accessories, p.typeSlug),
       kategorie_slug: p.typeSlug,
-      cena_bez_dph: czk(p.price),
-      cena_s_dph: czk(p.priceVat),
+      ...(p.price > 0
+        ? { cena_bez_dph: czk(p.price), cena_s_dph: czk(p.priceVat) }
+        : { cena: 'cena po přihlášení na webu dodavatele' }),
       ...(p.unit !== 'ks' ? { jednotka: p.unit } : {}),
       ...(p.dimensions ? { rozmery: p.dimensions } : {}),
     }
@@ -252,7 +253,7 @@ export function createChatTools(data: CatalogData | undefined) {
     const min = Number(args.cena_min)
     const max = Number(args.cena_max)
     if (Number.isFinite(min) && min > 0) list = list.filter((p) => p.price >= min)
-    if (Number.isFinite(max) && max > 0) list = list.filter((p) => p.price <= max)
+    if (Number.isFinite(max) && max > 0) list = list.filter((p) => p.price > 0 && p.price <= max)
     const toks = norm(String(args.dotaz ?? ''))
       .split(' ')
       .filter((t) => t.length > 1 && !['od', 'do', 'kc', 'pro', 'na', 'se', 'za', 'ks'].includes(t))
@@ -269,7 +270,10 @@ export function createChatTools(data: CatalogData | undefined) {
     const lead = toks[0]
     const primary = (p: ToolProduct) => (lead ? norm(p.name).startsWith(lead) || norm(catName(accessories, p.typeSlug)).startsWith(lead) : true)
     const desc = args.razeni === 'cena_sestupne'
-    list = [...list].sort((a, b) => Number(primary(b)) - Number(primary(a)) || (desc ? b.price - a.price : a.price - b.price))
+    const priceRank = (p: ToolProduct) => (p.price > 0 ? p.price : desc ? -1 : Number.MAX_VALUE)
+    list = [...list].sort(
+      (a, b) => Number(primary(b)) - Number(primary(a)) || (desc ? priceRank(b) - priceRank(a) : priceRank(a) - priceRank(b)),
+    )
     return list
   }
 
@@ -399,6 +403,9 @@ export function createChatTools(data: CatalogData | undefined) {
         }
         case 'pridat_do_nabidky': {
           const p = product()
+          if (!(p.price > 0)) {
+            return { chyba: 'Tento produkt nemá veřejnou cenu. Otevřete detail na webu dodavatele.' }
+          }
           const add = intIn(args.mnozstvi, 1, 999, 1)
           const prev = quote.get(p.id) || 0
           const next = Math.min(9999, prev + add)

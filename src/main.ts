@@ -510,7 +510,12 @@ function setQty(productId: string, value: number) {
   render()
 }
 
+function priceKnown(product: Product): boolean {
+  return product.price > 0 && product.priceVat > 0
+}
+
 function addOne(product: Product) {
+  if (!priceKnown(product)) return
   productsById.set(product.id, product)
   setQty(product.id, (cart[product.id] || 0) + 1)
   maybeTipAfterAdd(product)
@@ -1330,15 +1335,26 @@ function productCardHtml(p: Product): string {
         }
         <div class="product-price-row">
           <div class="product-price-block">
-            <strong>${formatCzk(p.price)}</strong>
+            ${
+              priceKnown(p)
+                ? `<strong>${formatCzk(p.price)}</strong>
             <span class="muted">bez DPH</span>
-            <span class="muted price-vat">${formatCzk(p.priceVat)} s DPH / ${escapeHtml(p.unit)}</span>
+            <span class="muted price-vat">${formatCzk(p.priceVat)} s DPH / ${escapeHtml(p.unit)}</span>`
+                : `<strong>Cena po přihlášení</strong>
+            <span class="muted">na webu dodavatele</span>`
+            }
           </div>
-          <button type="button" class="link-btn history-link" data-history="${escapeAttr(p.id)}" aria-expanded="${historyOpenId === p.id}">Historie</button>
+          ${
+            priceKnown(p)
+              ? `<button type="button" class="link-btn history-link" data-history="${escapeAttr(p.id)}" aria-expanded="${historyOpenId === p.id}">Historie</button>`
+              : ''
+          }
         </div>
         <div class="product-actions">
           ${
-            pickMode
+            !priceKnown(p)
+              ? ''
+              : pickMode
               ? `<button class="btn btn-primary" type="button" data-pick="${escapeAttr(p.id)}">Vybrat</button>`
               : qty
               ? `<div class="qty" data-qty="${escapeAttr(p.id)}">

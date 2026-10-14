@@ -66,7 +66,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
     const tablesDB = new TablesDB(client())
     const all: Record<string, unknown>[] = []
     let cursor: string | undefined
-    for (let page = 0; page < 120; page++) {
+    for (let page = 0; page < 400; page++) {
       const queries = [...extraQueries, Query.limit(100)]
       if (cursor) queries.push(Query.cursorAfter(cursor))
       const result = await tablesDB.listRows({ databaseId, tableId, queries })
@@ -169,7 +169,16 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
     return { accessories, products }
   }
 
+  let catalogCache: {
+    at: number
+    accessories: ReturnType<typeof mapAccessory>[]
+    products: ReturnType<typeof mapProduct>[]
+  } | null = null
+
   async function loadCatalog() {
+    if (catalogCache && Date.now() - catalogCache.at < 60_000) {
+      return { accessories: catalogCache.accessories, products: catalogCache.products }
+    }
     try {
       const [accRows, prodRows] = await Promise.all([
         fetchAllRows('accessories', [Query.orderAsc('sortOrder')]),
@@ -180,6 +189,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         .filter((a) => a.category !== 'Vlastní výroba' && a.slug !== 'zadni-zabrana')
       const products = prodRows.map(mapProduct).filter((p) => p.typeSlug !== 'zadni-zabrana')
       if (!products.length && !accessories.length) return loadLocalCatalog()
+      catalogCache = { at: Date.now(), accessories, products }
       return { accessories, products }
     } catch (err) {
       console.warn('[acc-db] Appwrite unavailable, using local scraped_products.json', err)
@@ -196,14 +206,18 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
     let minVat = Infinity
     let maxVat = 0
     let sumVat = 0
+    let priced = 0
     let withImage = 0
     const withImageBySupplier: Record<string, number> = {}
     for (const p of products) {
       bySupplier[p.supplier] = (bySupplier[p.supplier] || 0) + 1
       byType[p.typeSlug] = (byType[p.typeSlug] || 0) + 1
-      if (p.priceVat < minVat) minVat = p.priceVat
-      if (p.priceVat > maxVat) maxVat = p.priceVat
-      sumVat += p.priceVat
+      if (p.priceVat > 0) {
+        priced++
+        if (p.priceVat < minVat) minVat = p.priceVat
+        if (p.priceVat > maxVat) maxVat = p.priceVat
+        sumVat += p.priceVat
+      }
       if (p.imageUrl) {
         withImage++
         withImageBySupplier[p.supplier] = (withImageBySupplier[p.supplier] || 0) + 1
@@ -220,9 +234,9 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       withImage,
       withImageBySupplier,
       priceVat: {
-        min: products.length ? minVat : 0,
-        max: products.length ? maxVat : 0,
-        avg: products.length ? Math.round(sumVat / products.length) : 0,
+        min: priced ? minVat : 0,
+        max: priced ? maxVat : 0,
+        avg: priced ? Math.round(sumVat / priced) : 0,
       },
       shipping: { rates: SHIPPING_RATES, averageParcel: SHIPPING_AVG },
       updatedAt: new Date().toISOString(),
@@ -384,9 +398,13 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
               p.typeSlug.toLocaleLowerCase('cs').includes(q),
           )
         }
-        items.sort((a, b) =>
-          sort === 'price_desc' ? b.priceVat - a.priceVat : a.priceVat - b.priceVat,
-        )
+        items.sort((a, b) => {
+          const ak = a.price > 0
+          const bk = b.price > 0
+          if (ak !== bk) return ak ? -1 : 1
+          if (!ak) return a.name.localeCompare(b.name, 'cs')
+          return sort === 'price_desc' ? b.priceVat - a.priceVat : a.priceVat - b.priceVat
+        })
         const suppliers = [...new Set(items.map((p) => p.supplier))].sort((a, b) =>
           a.localeCompare(b, 'cs'),
         )

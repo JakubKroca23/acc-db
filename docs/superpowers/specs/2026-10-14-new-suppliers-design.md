@@ -104,6 +104,8 @@ Mapovat jen průmyslové / hydraulické / převodové sekce Olejspol. **Nescrapo
 
 ## Fáze 3 — RECA
 
+**Zrušeno 14. 10. 2026.** RECA veřejné ceny neukazuje (až po přihlášení). Z katalogu i z databáze je pryč. Znovu ji nezapojovat, dokud o to uživatel výslovně nepožádá.
+
 ### Dodavatel
 
 - Display name: `RECA`
