@@ -213,6 +213,7 @@ let updatePolling: number | undefined
 let toastMsg = ''
 let catalogInfoOpen = false
 let catalogDevMenuOpen = false
+let supplierMenuOpen = false
 let dismissedKitTips = loadDismissedKitTips()
 let activeKitTip: KitTipGap | null = null
 let kitTipHideTimer: number | undefined
@@ -1084,26 +1085,41 @@ function supplierFilterHtml(_counts: Map<string, number>): string {
   const disabled = viewMode === 'quote'
   const list = allCatalogSuppliers.length ? allCatalogSuppliers : []
   const subset = suppliersFilterReady && !suppliersAllOn()
-  const chips = list
+  const countBadge =
+    subset && selectedSuppliers.size
+      ? `<span class="supplier-filter-count" aria-hidden="true">${selectedSuppliers.size}</span>`
+      : ''
+  const options = list
     .map((s) => {
       const active = selectedSuppliers.has(s)
-      const showX = subset && active
-      const title = disabled
-        ? 'Filtr dodavatele platí pro katalog'
-        : active
-          ? `Odebrat filtr: ${s}`
-          : `Filtrovat: ${s}`
-      return `<button type="button" class="mfr-chip sup-${supplierKey(s)} ${active ? 'on' : 'off'}" data-supplier-filter="${escapeAttr(s)}" aria-pressed="${active}" ${disabled ? 'disabled' : ''} title="${escapeAttr(title)}">
-      <span class="mfr-chip-label">${escapeHtml(s)}</span>${showX ? `<span class="mfr-chip-x" aria-hidden="true">×</span>` : ''}
-    </button>`
+      return `<label class="supplier-filter-option sup-${supplierKey(s)}">
+        <input type="checkbox" data-supplier-check="${escapeAttr(s)}" ${active ? 'checked' : ''} ${disabled ? 'disabled' : ''} />
+        <span class="supplier-filter-option-label">${escapeHtml(s)}</span>
+      </label>`
     })
     .join('')
   const showClear =
     suppliersFilterReady &&
     (subset || (viewMode === 'browse' && !!selectedSlug && selectedSlug !== ALL_SLUG))
-  return `<div class="filter-mfr">
-    <span class="filter-label">Výrobce</span>
-    <div class="mfr-chips" role="group" aria-label="Filtrovat podle dodavatele">${chips}</div>
+  const panel =
+    supplierMenuOpen && !disabled
+      ? `<div class="supplier-filter-panel" id="supplier-filter-panel" role="dialog" aria-label="Filtrovat podle výrobce">
+          <div class="supplier-filter-panel-actions">
+            <button type="button" class="link-btn" data-action="supplier-select-all">Vybrat vše</button>
+            <span class="supplier-filter-panel-sep" aria-hidden="true">·</span>
+            <button type="button" class="link-btn" data-action="supplier-select-none">Zrušit výběr</button>
+          </div>
+          <div class="supplier-filter-list" role="group">${options || '<span class="muted supplier-filter-empty">Žádní výrobci</span>'}</div>
+        </div>`
+      : ''
+  return `<div class="filter-mfr supplier-filter">
+    <div class="supplier-filter-dropdown">
+      <button type="button" class="supplier-filter-btn ${subset ? 'is-filtered' : ''}" data-action="toggle-supplier-menu" aria-expanded="${supplierMenuOpen && !disabled ? 'true' : 'false'}" aria-controls="supplier-filter-panel" aria-haspopup="dialog" ${disabled ? 'disabled' : ''} title="${disabled ? 'Filtr výrobce platí pro katalog' : 'Filtrovat podle výrobce'}">
+        <span>Výrobci</span>${countBadge}
+        <svg class="supplier-filter-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      ${panel}
+    </div>
     ${showClear ? `<button type="button" class="link-btn filter-clear-all" data-action="clear-filters">Vymazat vše</button>` : ''}
   </div>`
 }
@@ -1196,17 +1212,12 @@ function navHtml(): string {
       </button>
     </div>`
   return allBtn + sorted
-    .map((cat) => {
+    .map((cat, catIdx) => {
       const roots = types
         .filter((t) => t.category === cat && (!t.parentSlug || !types.some((x) => x.slug === t.parentSlug)))
         .sort((a, b) => a.sortOrder - b.sortOrder)
       const groupHasQuote = types.some((t) => t.category === cat && qc.has(t.slug))
-      return `
-        <div class="nav-group">
-          <div class="nav-group-title ${groupHasQuote ? 'has-quote' : ''}">${escapeHtml(cat)}${
-            groupHasQuote ? `<span class="nav-dot" aria-hidden="true" title="Obsahuje položky z nabídky"></span>` : ''
-          }</div>
-          ${roots
+      const body = roots
             .map((t) => {
               const children = types
                 .filter((c) => c.parentSlug === t.slug)
@@ -1233,7 +1244,13 @@ function navHtml(): string {
                   .join('')}
               `
             })
-            .join('')}
+            .join('')
+      return `
+        <div class="nav-group nav-group-cat" data-cat-tone="${catIdx % 5}">
+          <div class="nav-group-title ${groupHasQuote ? 'has-quote' : ''}">${escapeHtml(cat)}${
+            groupHasQuote ? `<span class="nav-dot" aria-hidden="true" title="Obsahuje položky z nabídky"></span>` : ''
+          }</div>
+          <div class="nav-group-body">${body}</div>
         </div>`
     })
     .join('')
@@ -1946,6 +1963,10 @@ app.addEventListener('click', (e) => {
     catalogInfoOpen = false
     renderHeaderActions()
   }
+  if (supplierMenuOpen && !target.closest('.supplier-filter-dropdown')) {
+    supplierMenuOpen = false
+    renderMain()
+  }
   const typeBtn = target.closest<HTMLElement>('[data-type]')
   if (typeBtn) {
     selectType(typeBtn.dataset.type!)
@@ -1954,24 +1975,6 @@ app.addEventListener('click', (e) => {
   const historyBtn = target.closest<HTMLElement>('[data-history]')
   if (historyBtn) {
     void togglePriceHistory(historyBtn.dataset.history!)
-    return
-  }
-  const supplierBtn = target.closest<HTMLElement>('[data-supplier-filter]')
-  if (supplierBtn && !supplierBtn.hasAttribute('disabled')) {
-    const name = supplierBtn.dataset.supplierFilter || ''
-    if (!name) return
-    if (selectedSuppliers.has(name)) selectedSuppliers.delete(name)
-    else selectedSuppliers.add(name)
-    void loadProductsForCurrent()
-    return
-  }
-  const clearSupBtn = target.closest<HTMLElement>('[data-clear-supplier]')
-  if (clearSupBtn) {
-    const name = clearSupBtn.dataset.clearSupplier || ''
-    if (name) {
-      selectedSuppliers.delete(name)
-      void loadProductsForCurrent()
-    }
     return
   }
   const sortBtn = target.closest<HTMLElement>('[data-sort-set]')
@@ -2038,6 +2041,21 @@ app.addEventListener('click', (e) => {
       break
     case 'clear-filters':
       clearCatalogFilters()
+      break
+    case 'toggle-supplier-menu':
+      if (viewMode === 'quote') break
+      supplierMenuOpen = !supplierMenuOpen
+      renderMain()
+      break
+    case 'supplier-select-all':
+      selectAllSuppliers()
+      supplierMenuOpen = true
+      void loadProductsForCurrent()
+      break
+    case 'supplier-select-none':
+      selectedSuppliers.clear()
+      supplierMenuOpen = true
+      void loadProductsForCurrent()
       break
     case 'kit-tip-dismiss':
       if (activeKitTip) dismissKitMissing(activeKitTip.missing.map((m) => m.slug))
@@ -2132,6 +2150,14 @@ app.addEventListener('click', (e) => {
 
 app.addEventListener('change', (e) => {
   const target = e.target as HTMLElement
+  if (target.matches('[data-supplier-check]')) {
+    const name = (target as HTMLInputElement).dataset.supplierCheck || ''
+    if (!name) return
+    if ((target as HTMLInputElement).checked) selectedSuppliers.add(name)
+    else selectedSuppliers.delete(name)
+    void loadProductsForCurrent()
+    return
+  }
   if (target.matches('[data-sort]')) {
     const v = (target as HTMLSelectElement).value
     sortOrder = v === 'price_desc' ? 'price_desc' : 'price_asc'

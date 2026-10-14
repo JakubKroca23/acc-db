@@ -25,10 +25,10 @@
   --border-strong: #cbd5e1;
   --input: #ffffff;
   --destructive: #dc2626;
-  --titlebar: #1a1e26;
-  --sidebar-panel: #1a1e26;
-  --sidebar-ink: #94a3b8;
-  --header-search-bg: #252a34;
+  --titlebar: #3d4654;
+  --sidebar-panel: #2f3642;
+  --sidebar-ink: #a8b4c4;
+  --header-search-bg: rgba(255, 255, 255, 0.14);
   --success: #065f46;
   --success-bg: #ecfdf5;
   --warning: #92400e;
@@ -177,8 +177,9 @@ h3 {
 
 .header-search {
   position: relative;
-  width: min(520px, 48vw);
-  min-width: 220px;
+  width: max-content;
+  max-width: min(100%, 38ch);
+  min-width: 0;
   justify-self: center;
   grid-column: 2;
 }
@@ -195,18 +196,21 @@ h3 {
 }
 
 .search {
-  width: 100%;
-  height: 38px;
-  padding: 0 14px 0 38px;
-  border-radius: 10px;
-  border: 1px solid transparent;
+  width: 38ch;
+  max-width: 100%;
+  height: 36px;
+  padding: 0 12px 0 36px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: var(--header-search-bg);
   color: #f8fafc;
+  font-size: 13.5px;
   transition: background-color 150ms, border-color 150ms, box-shadow 150ms;
 }
 
 .search::placeholder {
-  color: #94a3b8;
+  color: rgba(203, 213, 225, 0.75);
+  font-size: 13px;
 }
 
 .search:focus {
@@ -404,7 +408,7 @@ h3 {
   overflow-y: auto;
   display: grid;
   align-content: start;
-  gap: 14px;
+  gap: 10px;
   padding-right: 2px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
@@ -415,14 +419,48 @@ h3 {
   gap: 1px;
 }
 
+.nav-group-cat {
+  padding: 8px 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.nav-group-cat[data-cat-tone='0'] {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(96, 165, 250, 0.14);
+}
+.nav-group-cat[data-cat-tone='1'] {
+  background: rgba(15, 118, 110, 0.1);
+  border-color: rgba(45, 212, 191, 0.12);
+}
+.nav-group-cat[data-cat-tone='2'] {
+  background: rgba(124, 58, 237, 0.08);
+  border-color: rgba(167, 139, 250, 0.14);
+}
+.nav-group-cat[data-cat-tone='3'] {
+  background: rgba(194, 65, 12, 0.08);
+  border-color: rgba(251, 146, 60, 0.12);
+}
+.nav-group-cat[data-cat-tone='4'] {
+  background: rgba(71, 85, 105, 0.22);
+  border-color: rgba(148, 163, 184, 0.12);
+}
+
+.nav-group-body {
+  display: grid;
+  gap: 2px;
+}
+
 .nav-group-title {
   font-family: var(--font-sans);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
-  color: #64748b;
-  padding: 0 12px 6px;
+  letter-spacing: 0.1em;
+  color: #cbd5e1;
+  padding: 0 8px 8px;
+  line-height: 1.3;
 }
 
 .nav-item {
@@ -771,6 +809,148 @@ textarea:focus {
   gap: 8px;
   flex-wrap: wrap;
   min-width: 0;
+}
+
+.supplier-filter-dropdown {
+  position: relative;
+}
+
+.supplier-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 120ms, box-shadow 120ms, background-color 120ms;
+}
+
+.supplier-filter-btn:hover:not(:disabled) {
+  border-color: var(--brand-blue);
+  background: var(--brand-blue-muted);
+}
+
+.supplier-filter-btn.is-filtered {
+  border-color: #93c5fd;
+  background: var(--brand-blue-muted);
+  color: var(--brand-blue-ink);
+}
+
+.supplier-filter-btn[aria-expanded='true'] {
+  border-color: var(--brand-blue);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+}
+
+.supplier-filter-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.supplier-filter-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--brand-blue);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.supplier-filter-chevron {
+  width: 14px;
+  height: 14px;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.supplier-filter-btn[aria-expanded='true'] .supplier-filter-chevron {
+  transform: rotate(180deg);
+}
+
+.supplier-filter-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 45;
+  width: min(260px, calc(100vw - 32px));
+  padding: 8px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: var(--shadow-pop);
+}
+
+.supplier-filter-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.supplier-filter-panel-sep {
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+
+.supplier-filter-list {
+  display: grid;
+  gap: 2px;
+  max-height: min(280px, 50vh);
+  overflow-y: auto;
+}
+
+.supplier-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+  transition: background-color 100ms;
+}
+
+.supplier-filter-option:hover {
+  background: var(--muted);
+}
+
+.supplier-filter-option input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--brand-blue);
+}
+
+.supplier-filter-option-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.supplier-filter-option.sup-alsap .supplier-filter-option-label { color: var(--sup-alsap); }
+.supplier-filter-option.sup-tt .supplier-filter-option-label { color: var(--sup-tt); }
+.supplier-filter-option.sup-ht .supplier-filter-option-label { color: var(--sup-ht); }
+.supplier-filter-option.sup-pav .supplier-filter-option-label { color: var(--sup-pav); }
+.supplier-filter-option.sup-olej .supplier-filter-option-label { color: var(--sup-olej); }
+.supplier-filter-option.sup-hl .supplier-filter-option-label { color: var(--sup-hl); }
+
+.supplier-filter-empty {
+  padding: 8px;
+  font-size: 13px;
 }
 
 .filter-label {
@@ -2661,8 +2841,9 @@ textarea:focus {
 
 /* ── „Vše“ + progressive list ──────────────────────────────────── */
 .nav-group-all {
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 4px 6px 12px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .nav-item.nav-all {
