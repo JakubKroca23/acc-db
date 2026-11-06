@@ -1,0 +1,67 @@
+name: VPS deploy (shared)
+on:
+  workflow_call:
+    inputs:
+      path: {description: "App directory on the VPS", required: true, type: string}
+      branch: {required: false, type: string, default: main}
+      compose: {description: "Extra docker compose args (-p, -f ...)", required: false, type: string, default: ""}
+      command: {description: "Custom deploy command instead of compose up --build", required: false, type: string, default: ""}
+      url: {description: "URL to check after deploy", required: false, type: string, default: ""}
+    secrets:
+      VPS_HOST: {required: true}
+      VPS_USER: {required: true}
+      VPS_KEY: {required: true}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: vps-${{ github.repository }}
+      cancel-in-progress: false
+    steps:
+      - name: SSH setup
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_KEY: ${{ secrets.VPS_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Pull + rebuild on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          P: ${{ inputs.path }}
+          B: ${{ inputs.branch }}
+          C: ${{ inputs.compose }}
+          CMD: ${{ inputs.command }}
+        run: |
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "$VPS_USER@$VPS_HOST" "bash -s -- $(printf '%q ' "$P" "$B" "$C" "$CMD")" <<'EOS'
+          set -euo pipefail
+          P=$1; B=$2; C=$3; CMD=$4
+          cd "$P"
+          cur=$(git branch --show-current)
+          [ "$cur" = "$B" ] || { echo "Server checkout is on '$cur', expected '$B' - aborting"; exit 1; }
+          git fetch origin "$B"
+          if ! git diff --quiet HEAD; then
+            mkdir -p ~/deploy-backups
+            f=~/deploy-backups/$(basename "$P")-$(date +%Y%m%d-%H%M%S).patch
+            git diff HEAD > "$f"; echo "Local changes backed up to $f (kept via autostash)"
+          fi
+          git merge --ff-only --autostash "origin/$B"
+          git log -1 --oneline
+          if [ -n "$CMD" ]; then bash -c "$CMD"; else docker compose $C up -d --build; fi
+          docker compose $C ps
+          EOS
+      - name: Health check
+        if: inputs.url != ''
+        env:
+          URL: ${{ inputs.url }}
+        run: |
+          for i in $(seq 1 24); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -L "$URL" || true)
+            echo "try $i: $code"
+            [ "$code" = 200 ] && exit 0
+            sleep 5
+          done
+          exit 1
