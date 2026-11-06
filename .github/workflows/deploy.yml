@@ -1,0 +1,14 @@
+name: Deploy to VPS
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    uses: JakubKroca23/deploy/.github/workflows/vps.yml@main
+    with:
+      path: /home/ubuntu/contsystem/acc-db
+      branch: main
+      compose: "-p acc-db"
+      url: https://zakazky.contsystem.cz/acc-db/
+    secrets: inherit
