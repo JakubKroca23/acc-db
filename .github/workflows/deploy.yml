@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 jobs:
   deploy:
-    uses: JakubKroca23/deploy/.github/workflows/vps.yml@main
+    uses: ./.github/workflows/vps.yml
     with:
       path: /home/ubuntu/contsystem/acc-db
       branch: main
