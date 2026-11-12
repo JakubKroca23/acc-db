@@ -5,12 +5,20 @@ import { gzipSync } from 'node:zlib'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { SHIPPING_RATES, SHIPPING_AVG } from '../shipping.ts'
-import { getCatalogUpdateStatus, startCatalogUpdate, stopCatalogUpdate } from './catalog-update.ts'
+import {
+  getCatalogUpdateStatus,
+  startCatalogUpdate,
+  stopCatalogUpdate,
+  setCatalogChangedHandler,
+} from './catalog-update.ts'
 import { handleImageProxy } from './image-proxy.ts'
 import { hasDatabaseUrl } from './db.ts'
 import {
   listAccessories,
-  listProducts,
+  queryProducts,
+  listAllSuppliers,
+  productCountsByType,
+  catalogStats,
   priceHistory,
   type AccessoryRow,
   type ProductRow,
@@ -59,17 +67,19 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
 
   function loadLocalCatalog() {
     const cmap = loadCategoryMap()
-    const accessories: AccessoryRow[] = cmap.accessories.map((a) => ({
-      id: a.slug,
-      name: a.name,
-      category: a.category,
-      unit: a.unit as 'ks' | 'L' | 'm',
-      priceApprox: a.priceApprox,
-      sortOrder: a.sortOrder,
-      slug: a.slug,
-      parentSlug: a.parentSlug,
-      relatedGroup: a.relatedGroup,
-    }))
+    const accessories: AccessoryRow[] = cmap.accessories
+      .filter((a) => a.category !== 'Vlastní výroba' && a.slug !== 'zadni-zabrana')
+      .map((a) => ({
+        id: a.slug,
+        name: a.name,
+        category: a.category,
+        unit: a.unit as 'ks' | 'L' | 'm',
+        priceApprox: a.priceApprox,
+        sortOrder: a.sortOrder,
+        slug: a.slug,
+        parentSlug: a.parentSlug,
+        relatedGroup: a.relatedGroup,
+      }))
     let products: ProductRow[] = []
     try {
       const raw = readFileSync(join(__dirname, '../../scripts/scraped_products.json'), 'utf8')
@@ -113,73 +123,87 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
     return { accessories, products }
   }
 
-  let catalogCache: {
-    at: number
-    accessories: AccessoryRow[]
-    products: ProductRow[]
-  } | null = null
+  /** Short-lived accessories cache (small). Products are queried per request in SQL. */
+  let accessoriesCache: { at: number; items: AccessoryRow[] } | null = null
 
-  async function loadCatalog() {
-    if (catalogCache && Date.now() - catalogCache.at < 60_000) {
-      return { accessories: catalogCache.accessories, products: catalogCache.products }
-    }
+  function invalidateCaches() {
+    accessoriesCache = null
+  }
+  setCatalogChangedHandler(invalidateCaches)
+
+  async function getAccessories(): Promise<AccessoryRow[]> {
+    if (accessoriesCache && Date.now() - accessoriesCache.at < 60_000) return accessoriesCache.items
     if (!usePg) {
-      const local = loadLocalCatalog()
-      catalogCache = { at: Date.now(), ...local }
-      return local
+      const items = loadLocalCatalog().accessories
+      accessoriesCache = { at: Date.now(), items }
+      return items
     }
     try {
-      const [accessories, products] = await Promise.all([listAccessories(env), listProducts(env)])
-      catalogCache = { at: Date.now(), accessories, products }
-      return { accessories, products }
+      const items = await listAccessories(env)
+      accessoriesCache = { at: Date.now(), items }
+      return items
     } catch (err) {
       console.error('[acc-db] PostgreSQL unavailable', err)
       throw new CatalogUnavailableError(err)
     }
   }
 
-  function buildStats(accessories: AccessoryRow[], products: ProductRow[]) {
-    const bySupplier: Record<string, number> = {}
-    const byType: Record<string, number> = {}
-    let minVat = Infinity
-    let maxVat = 0
-    let sumVat = 0
-    let priced = 0
-    let withImage = 0
-    const withImageBySupplier: Record<string, number> = {}
-    for (const p of products) {
-      bySupplier[p.supplier] = (bySupplier[p.supplier] || 0) + 1
-      byType[p.typeSlug] = (byType[p.typeSlug] || 0) + 1
-      if (p.priceVat > 0) {
-        priced++
-        if (p.priceVat < minVat) minVat = p.priceVat
-        if (p.priceVat > maxVat) maxVat = p.priceVat
-        sumVat += p.priceVat
+  async function getProducts(opts: {
+    typeSlug?: string | null
+    suppliers?: string[]
+    q?: string | null
+    sort?: 'price_asc' | 'price_desc'
+    ids?: string[]
+  }): Promise<{ items: ProductRow[]; allSuppliers: string[] }> {
+    if (!usePg) {
+      let items = loadLocalCatalog().products
+      if (opts.ids?.length) {
+        const want = new Set(opts.ids)
+        items = items.filter((p) => want.has(p.id))
       }
-      if (p.imageUrl) {
-        withImage++
-        withImageBySupplier[p.supplier] = (withImageBySupplier[p.supplier] || 0) + 1
+      if (opts.typeSlug) items = items.filter((p) => p.typeSlug === opts.typeSlug)
+      if (opts.suppliers?.length) items = items.filter((p) => opts.suppliers!.includes(p.supplier))
+      if (opts.q?.trim()) {
+        const q = opts.q.trim().toLocaleLowerCase('cs')
+        items = items.filter(
+          (p) =>
+            p.name.toLocaleLowerCase('cs').includes(q) ||
+            p.supplier.toLocaleLowerCase('cs').includes(q) ||
+            String(p.dimensions || '').toLocaleLowerCase('cs').includes(q) ||
+            String(p.sku || '').toLocaleLowerCase('cs').includes(q) ||
+            p.typeSlug.toLocaleLowerCase('cs').includes(q),
+        )
       }
+      items.sort((a, b) => {
+        const ak = a.price > 0
+        const bk = b.price > 0
+        if (ak !== bk) return ak ? -1 : 1
+        if (!ak) return a.name.localeCompare(b.name, 'cs')
+        return opts.sort === 'price_desc' ? b.priceVat - a.priceVat : a.priceVat - b.priceVat
+      })
+      const allSuppliers = [
+        ...new Set(loadLocalCatalog().products.map((p) => p.supplier).filter((s) => s && s !== 'tržní odhad')),
+      ].sort((a, b) => a.localeCompare(b, 'cs'))
+      return { items, allSuppliers }
     }
-    const categories = [...new Set(accessories.map((a) => String(a.category)))]
-    return {
-      types: accessories.length,
-      products: products.length,
-      categories: categories.length,
-      suppliers: Object.keys(bySupplier).filter((s) => s !== 'tržní odhad').length,
-      bySupplier,
-      byType,
-      withImage,
-      withImageBySupplier,
-      priceVat: {
-        min: priced ? minVat : 0,
-        max: priced ? maxVat : 0,
-        avg: priced ? Math.round(sumVat / priced) : 0,
-      },
-      shipping: { rates: SHIPPING_RATES, averageParcel: SHIPPING_AVG },
-      updatedAt: new Date().toISOString(),
-      catalogUpdate: getCatalogUpdateStatus(),
-      backend: usePg ? 'postgres' : 'json',
+    try {
+      const [items, allSuppliers] = await Promise.all([
+        queryProducts(
+          {
+            typeSlug: opts.typeSlug,
+            suppliers: opts.suppliers,
+            q: opts.q,
+            sort: opts.sort,
+            ids: opts.ids,
+          },
+          env,
+        ),
+        listAllSuppliers(env),
+      ])
+      return { items, allSuppliers }
+    } catch (err) {
+      console.error('[acc-db] PostgreSQL unavailable', err)
+      throw new CatalogUnavailableError(err)
     }
   }
 
@@ -244,18 +268,83 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       }
 
       if (method === 'GET' && pathOnly === '/api/stats') {
-        const { accessories, products } = await loadCatalog()
-        json(res, 200, buildStats(accessories, products))
+        if (!usePg) {
+          const { accessories, products } = loadLocalCatalog()
+          const bySupplier: Record<string, number> = {}
+          const byType: Record<string, number> = {}
+          let withImage = 0
+          const withImageBySupplier: Record<string, number> = {}
+          let minVat = Infinity
+          let maxVat = 0
+          let sumVat = 0
+          let priced = 0
+          for (const p of products) {
+            bySupplier[p.supplier] = (bySupplier[p.supplier] || 0) + 1
+            byType[p.typeSlug] = (byType[p.typeSlug] || 0) + 1
+            if (p.priceVat > 0) {
+              priced++
+              if (p.priceVat < minVat) minVat = p.priceVat
+              if (p.priceVat > maxVat) maxVat = p.priceVat
+              sumVat += p.priceVat
+            }
+            if (p.imageUrl) {
+              withImage++
+              withImageBySupplier[p.supplier] = (withImageBySupplier[p.supplier] || 0) + 1
+            }
+          }
+          json(res, 200, {
+            types: accessories.length,
+            products: products.length,
+            categories: new Set(accessories.map((a) => a.category)).size,
+            suppliers: Object.keys(bySupplier).filter((s) => s !== 'tržní odhad').length,
+            bySupplier,
+            byType,
+            withImage,
+            withImageBySupplier,
+            priceVat: {
+              min: priced ? minVat : 0,
+              max: priced ? maxVat : 0,
+              avg: priced ? Math.round(sumVat / priced) : 0,
+            },
+            shipping: { rates: SHIPPING_RATES, averageParcel: SHIPPING_AVG },
+            updatedAt: new Date().toISOString(),
+            catalogUpdate: getCatalogUpdateStatus(),
+            backend: 'json',
+          })
+          return
+        }
+        try {
+          const stats = await catalogStats(env)
+          json(res, 200, {
+            ...stats,
+            shipping: { rates: SHIPPING_RATES, averageParcel: SHIPPING_AVG },
+            updatedAt: new Date().toISOString(),
+            catalogUpdate: getCatalogUpdateStatus(),
+            backend: 'postgres',
+          })
+        } catch (err) {
+          throw new CatalogUnavailableError(err)
+        }
         return
       }
 
       if (method === 'GET' && pathOnly === '/api/categories') {
         const cmap = loadCategoryMap()
-        const { accessories, products } = await loadCatalog()
-        const counts: Record<string, number> = {}
-        for (const p of products) counts[p.typeSlug] = (counts[p.typeSlug] || 0) + 1
+        const accessories = await getAccessories()
+        let counts: Record<string, number> = {}
+        if (usePg) {
+          try {
+            counts = await productCountsByType(env)
+          } catch (err) {
+            throw new CatalogUnavailableError(err)
+          }
+        } else {
+          for (const p of loadLocalCatalog().products) {
+            counts[p.typeSlug] = (counts[p.typeSlug] || 0) + 1
+          }
+        }
 
-        const bySlug = new Map(accessories.map((a) => [a.slug, a]))
+        const bySlug = new Map(accessories.map((a) => [a.slug, { ...a }]))
         for (const a of cmap.accessories) {
           const existing = bySlug.get(a.slug)
           if (existing) {
@@ -267,7 +356,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         const categoryOrder = ['Podvozek', 'Všechny nástavby', 'Hákový nosič kontejneru', 'Ostatní']
         const tree = categoryOrder
           .map((cat) => {
-            const items = accessories
+            const items = [...bySlug.values()]
               .filter((a) => a.category === cat)
               .sort((a, b) => a.sortOrder - b.sortOrder)
               .map((a) => ({
@@ -291,7 +380,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
 
       if (method === 'GET' && pathOnly === '/api/accessories') {
         const cmap = loadCategoryMap()
-        const { accessories } = await loadCatalog()
+        const accessories = await getAccessories()
         const items = accessories
           .map((a) => {
             const meta = cmap.accessories.find((m) => m.slug === a.slug)
@@ -312,41 +401,26 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       if (method === 'GET' && pathOnly === '/api/products') {
         const u = new URL(url, 'http://localhost')
         const typeSlug = u.searchParams.get('type')
+        const idsRaw = (u.searchParams.get('ids') || '').trim()
+        const ids = idsRaw
+          ? [...new Set(idsRaw.split(',').map((s) => s.trim()).filter(Boolean))].slice(0, 100)
+          : undefined
         const supplierRaw = (u.searchParams.get('supplier') || '').trim()
         const wantedSuppliers = supplierRaw
           ? [...new Set(supplierRaw.split(',').map((s) => s.trim()).filter(Boolean))]
           : []
         const sort = u.searchParams.get('sort') === 'price_desc' ? 'price_desc' : 'price_asc'
-        const q = (u.searchParams.get('q') || '').trim().toLocaleLowerCase('cs')
-        const { products } = await loadCatalog()
-        let items = products
-        if (typeSlug) items = items.filter((p) => p.typeSlug === typeSlug)
-        if (wantedSuppliers.length) {
-          items = items.filter((p) => wantedSuppliers.includes(p.supplier))
-        }
-        if (q) {
-          items = items.filter(
-            (p) =>
-              p.name.toLocaleLowerCase('cs').includes(q) ||
-              p.supplier.toLocaleLowerCase('cs').includes(q) ||
-              String(p.dimensions || '').toLocaleLowerCase('cs').includes(q) ||
-              String(p.sku || '').toLocaleLowerCase('cs').includes(q) ||
-              p.typeSlug.toLocaleLowerCase('cs').includes(q),
-          )
-        }
-        items.sort((a, b) => {
-          const ak = a.price > 0
-          const bk = b.price > 0
-          if (ak !== bk) return ak ? -1 : 1
-          if (!ak) return a.name.localeCompare(b.name, 'cs')
-          return sort === 'price_desc' ? b.priceVat - a.priceVat : a.priceVat - b.priceVat
+        const q = (u.searchParams.get('q') || '').trim()
+        const { items, allSuppliers } = await getProducts({
+          typeSlug,
+          suppliers: wantedSuppliers.length ? wantedSuppliers : undefined,
+          q: q || undefined,
+          sort,
+          ids,
         })
         const suppliers = [...new Set(items.map((p) => p.supplier))].sort((a, b) =>
           a.localeCompare(b, 'cs'),
         )
-        const allSuppliers = [
-          ...new Set(products.map((p) => p.supplier).filter((s) => s && s !== 'tržní odhad')),
-        ].sort((a, b) => a.localeCompare(b, 'cs'))
         json(res, 200, { items, suppliers, allSuppliers, total: items.length, sort })
         return
       }

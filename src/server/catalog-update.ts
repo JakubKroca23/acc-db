@@ -47,6 +47,20 @@ let status: CatalogUpdateStatus = loadStatus()
 let running = false
 let stopRequested = false
 let currentChild: ChildProcess | null = null
+/** Cleared by api-handler so in-memory accessory cache does not serve pre-seed data. */
+let onCatalogChanged: (() => void) | null = null
+
+export function setCatalogChangedHandler(fn: (() => void) | null) {
+  onCatalogChanged = fn
+}
+
+function notifyCatalogChanged() {
+  try {
+    onCatalogChanged?.()
+  } catch {
+    /* ignore */
+  }
+}
 
 function loadStatus(): CatalogUpdateStatus {
   try {
@@ -249,6 +263,7 @@ export function startCatalogUpdate(
       status.phase = 'done'
       status.finishedAt = new Date().toISOString()
       pushLog('Catalogue update finished OK')
+      notifyCatalogChanged()
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       status.state = 'error'

@@ -263,7 +263,8 @@ async function hydrateCartProducts() {
   const missing = Object.keys(cart).filter((id) => !productsById.has(id))
   if (!missing.length) return
   try {
-    const res = await apiFetch(`/products`)
+    // Only fetch cart lines — never the full catalogue.
+    const res = await apiFetch(`/products?ids=${missing.slice(0, 100).map(encodeURIComponent).join(',')}`)
     const data = await res.json()
     if (!res.ok) return
     for (const p of data.items as Product[]) productsById.set(p.id, p)
