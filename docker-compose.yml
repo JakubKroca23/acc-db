@@ -34,6 +34,13 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      # Discrete PG config — heslo smí obsahovat ?, @, # (neprochází URL parserem).
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-acc}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:-acc_db}
+      # Volitelně; při speciálních znacích v hesle raději spoléhejte na POSTGRES_* výše.
       - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-acc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-acc_db}}
       # Přístup jen pro přihlášené v Contsystem Manageru s rolí (Appwrite label) z ACC_DB_ALLOWED_ROLES.
       # Vypnutí (nouzově): ACC_DB_AUTH=off v .env a `docker compose up -d`.

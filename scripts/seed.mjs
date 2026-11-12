@@ -6,9 +6,62 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import pg from 'pg'
 
-const databaseUrl = (process.env.DATABASE_URL || '').trim()
-if (!databaseUrl) {
-  console.error('Missing DATABASE_URL')
+function resolvePgClientConfig() {
+  const rawUrl = (process.env.DATABASE_URL || '').trim()
+  const user = (process.env.POSTGRES_USER || '').trim()
+  const password = process.env.POSTGRES_PASSWORD ?? ''
+  const databaseEnv = (process.env.POSTGRES_DB || '').trim()
+  let host = (process.env.POSTGRES_HOST || '').trim()
+  let port = Number(process.env.POSTGRES_PORT || 0) || undefined
+  let database = databaseEnv
+
+  if (rawUrl) {
+    const m = rawUrl.match(/@([^/:?]+)(?::(\d+))?\/([^?\s]+)/)
+    if (m) {
+      host = host || m[1]
+      port = port || (m[2] ? Number(m[2]) : undefined)
+      database = database || decodeURIComponent(m[3])
+    }
+  }
+
+  if (user && database && password !== '' && (host || rawUrl)) {
+    if (host) {
+      return {
+        user,
+        password,
+        host,
+        port: port || 5432,
+        database,
+      }
+    }
+  }
+
+  if (rawUrl) {
+    try {
+      // eslint-disable-next-line no-new
+      new URL(rawUrl)
+      return { connectionString: rawUrl }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (user && database && password !== '') {
+    return {
+      user,
+      password,
+      host: host || '127.0.0.1',
+      port: port || 5432,
+      database,
+    }
+  }
+
+  return null
+}
+
+const pgConfig = resolvePgClientConfig()
+if (!pgConfig) {
+  console.error('Missing DATABASE_URL (or POSTGRES_USER/PASSWORD/DB)')
   process.exit(1)
 }
 
@@ -64,7 +117,7 @@ function safeUrl(value) {
   }
 }
 
-const client = new pg.Client({ connectionString: databaseUrl })
+const client = new pg.Client(pgConfig)
 
 async function main() {
   console.log(`Seed: připojuji se k PostgreSQL…`)

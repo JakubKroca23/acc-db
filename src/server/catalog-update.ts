@@ -229,8 +229,8 @@ export function startCatalogUpdate(
 
       if (stopRequested) throw new Error('Zastaveno uživatelem')
 
-      if (!(process.env.DATABASE_URL || '').trim()) {
-        throw new Error('Chybí DATABASE_URL — seed do PostgreSQL nejde spustit (zkontrolujte .env na serveru)')
+      if (!(process.env.DATABASE_URL || '').trim() && !(process.env.POSTGRES_PASSWORD ?? '')) {
+        throw new Error('Chybí DATABASE_URL / POSTGRES_* — seed do PostgreSQL nejde spustit (zkontrolujte .env na serveru)')
       }
       pushLog('Scrape hotov — spouštím seed do PostgreSQL…')
       saveStatus()

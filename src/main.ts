@@ -7,10 +7,16 @@ const NOTE_KEY = 'acc-db-quote-note'
 const API_BASE = `${import.meta.env.BASE_URL}api`
 const DEFAULT_LOGIN_URL = '/login?next=%2Facc-db%2F'
 
+type ApiFetchOpts = RequestInit & {
+  /** When false, 401 stays on this page (e.g. bad ACC_DB_UPDATE_TOKEN) instead of Manager login. Default true. */
+  redirectOn401?: boolean
+}
+
 /** API call; an expired Manager session (401 from the auth gate) sends the user to the Manager login. */
-async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', ...init })
-  if (res.status === 401) {
+async function apiFetch(path: string, init: ApiFetchOpts = {}): Promise<Response> {
+  const { redirectOn401 = true, ...fetchInit } = init
+  const res = await fetch(`${API_BASE}${path}`, { credentials: 'same-origin', ...fetchInit })
+  if (res.status === 401 && redirectOn401) {
     const data = (await res
       .clone()
       .json()
@@ -196,6 +202,8 @@ let searchTimer: number | undefined
 let updateStatus: CatalogUpdateStatus | null = null
 /** On update page: show supplier form (true) or live console (false). */
 let updateAwaitingConfirm = true
+/** Inline form error (e.g. wrong ACC_DB_UPDATE_TOKEN) — stays on #/aktualizace. */
+let updateFormError = ''
 const UPDATE_SUPPLIER_OPTIONS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol', 'Hydrolider'] as const
 let updateSelectedSuppliers: string[] = [...UPDATE_SUPPLIER_OPTIONS]
 let updatePolling: number | undefined
@@ -675,6 +683,13 @@ function updatePageHtml(): string {
         <span class="upd-supplier-hint">${escapeHtml(hint)}</span>
       </label>`
     }).join('')
+    const savedToken = (() => {
+      try {
+        return localStorage.getItem('acc-db-update-token') || ''
+      } catch {
+        return ''
+      }
+    })()
     return `
     <div class="upd-page">
       <div class="content-head">
@@ -685,12 +700,21 @@ function updatePageHtml(): string {
         <button type="button" class="btn btn-outline" data-action="back-to-catalog">Zpět do katalogu</button>
       </div>
       <div class="upd-panel">
+        ${
+          updateFormError
+            ? `<div class="upd-form-error" role="alert">${escapeHtml(updateFormError)}</div>`
+            : ''
+        }
         <div class="upd-supplier-list" role="group" aria-label="Dodavatelé">${boxes}</div>
         <div class="upd-quick-row">
           <button type="button" class="link-btn" data-action="update-suppliers-all">Všichni</button>
           <button type="button" class="link-btn" data-action="update-suppliers-pavlinek">Jen Pavlínek</button>
           <button type="button" class="link-btn" data-action="update-suppliers-no-pav">Bez Pavlínek</button>
         </div>
+        <label class="upd-token-field">
+          <span>Update token <span class="muted">(ACC_DB_UPDATE_TOKEN — nechte prázdné, pokud na serveru není nastavený)</span></span>
+          <input type="password" data-update-token autocomplete="off" placeholder="volitelný token" value="${escapeAttr(savedToken)}" />
+        </label>
         <div class="upd-actions">
           <button type="button" class="btn btn-primary" data-action="confirm-update-catalog">Spustit aktualizaci</button>
         </div>
@@ -847,23 +871,40 @@ function leaveUpdate() {
   window.scrollTo({ top: catalogScrollY })
 }
 
-async function updateAuthHeaders(): Promise<Record<string, string> | null> {
+function readUpdateTokenInput(): string {
+  const el = app.querySelector<HTMLInputElement>('[data-update-token]')
+  return (el?.value || '').trim()
+}
+
+function updateAuthHeadersFromToken(token: string): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  let token = localStorage.getItem('acc-db-update-token') || ''
-  if (!token) {
-    const entered = window.prompt(
-      'Volitelný update token (ACC_DB_UPDATE_TOKEN). Nechte prázdné, pokud server token nevyžaduje:',
-      '',
-    )
-    if (entered === null) return null
-    token = entered.trim()
-    if (token) localStorage.setItem('acc-db-update-token', token)
-  }
   if (token) headers['X-Update-Token'] = token
   return headers
 }
 
+function showUpdateTokenError(message: string) {
+  updateFormError = message
+  updateAwaitingConfirm = true
+  updateStatus = null
+  try {
+    localStorage.removeItem('acc-db-update-token')
+  } catch {
+    /* ignore */
+  }
+  if (viewMode !== 'update') openUpdateView(false)
+  else render()
+}
+
 async function triggerUpdate() {
+  updateFormError = ''
+  const token = readUpdateTokenInput()
+  try {
+    if (token) localStorage.setItem('acc-db-update-token', token)
+    else localStorage.removeItem('acc-db-update-token')
+  } catch {
+    /* ignore */
+  }
+
   updateAwaitingConfirm = false
   updateStatus = {
     state: 'running',
@@ -884,22 +925,20 @@ async function triggerUpdate() {
     } catch {
       /* ignore */
     }
-    const headers = await updateAuthHeaders()
-    if (!headers) {
-      updateAwaitingConfirm = true
-      updateStatus = null
-      render()
-      return
-    }
+    const headers = updateAuthHeadersFromToken(token)
     const res = await apiFetch(`/catalog/update`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ suppliers: updateSelectedSuppliers }),
+      redirectOn401: false,
     })
-    const data = await res.json()
+    const data = (await res.json().catch(() => ({}))) as { error?: string; status?: CatalogUpdateStatus }
     if (res.status === 401) {
-      localStorage.removeItem('acc-db-update-token')
-      throw new Error('Neplatný update token — zkuste znovu')
+      showUpdateTokenError(
+        data.error ||
+          'Neplatný nebo chybějící update token. Zadejte hodnotu ACC_DB_UPDATE_TOKEN ze serverového .env, nebo token na serveru vypněte.',
+      )
+      return
     }
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     updateStatus = data.status as CatalogUpdateStatus
@@ -916,23 +955,45 @@ async function triggerUpdate() {
       counts: null,
       seed: null,
     }
-    render()
+    if (viewMode !== 'update') openUpdateView(false)
+    else render()
   }
 }
 
 async function stopUpdate() {
   try {
-    const headers = await updateAuthHeaders()
-    if (!headers) return
-    const res = await apiFetch(`/catalog/update/stop`, { method: 'POST', headers, body: '{}' })
-    const data = await res.json()
+    const token = readUpdateTokenInput() || localStorage.getItem('acc-db-update-token') || ''
+    const headers = updateAuthHeadersFromToken(token)
+    const res = await apiFetch(`/catalog/update/stop`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+      redirectOn401: false,
+    })
+    const data = (await res.json().catch(() => ({}))) as { error?: string; status?: CatalogUpdateStatus }
+    if (res.status === 401) {
+      showUpdateTokenError(
+        data.error || 'Neplatný update token — zastavení se nepodařilo. Opravte token a zkuste znovu.',
+      )
+      return
+    }
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     updateStatus = (data.status || data) as CatalogUpdateStatus
     window.clearInterval(updatePolling)
     render()
   } catch (err) {
-    toastMsg = err instanceof Error ? err.message : 'Nepodařilo se zastavit'
-    render()
+    updateStatus = {
+      state: 'error',
+      phase: 'error',
+      startedAt: updateStatus?.startedAt || new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      logs: [...(updateStatus?.logs || []), err instanceof Error ? err.message : 'Nepodařilo se zastavit'],
+      error: err instanceof Error ? err.message : 'Nepodařilo se zastavit',
+      counts: null,
+      seed: null,
+    }
+    if (viewMode !== 'update') openUpdateView(false)
+    else render()
   }
 }
 
@@ -1988,6 +2049,7 @@ app.addEventListener('click', (e) => {
     case 'update-catalog-again':
       if (!isCatalogDev()) break
       updateAwaitingConfirm = true
+      updateFormError = ''
       updateSelectedSuppliers = loadSavedUpdateSuppliers()
       renderMain()
       break
