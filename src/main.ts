@@ -713,7 +713,22 @@ function updatePageHtml(): string {
         </div>
         <label class="upd-token-field">
           <span>Update token <span class="muted">(ACC_DB_UPDATE_TOKEN — nechte prázdné, pokud na serveru není nastavený)</span></span>
-          <input type="password" data-update-token autocomplete="off" placeholder="volitelný token" value="${escapeAttr(savedToken)}" />
+          <input
+            type="text"
+            class="upd-token-input"
+            name="acc_db_x_update_token"
+            data-update-token
+            autocomplete="new-password"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            data-1p-ignore
+            data-lpignore="true"
+            data-bwignore
+            data-form-type="other"
+            placeholder="volitelný token"
+            value="${escapeAttr(savedToken)}"
+          />
         </label>
         <div class="upd-actions">
           <button type="button" class="btn btn-primary" data-action="confirm-update-catalog">Spustit aktualizaci</button>
@@ -1528,7 +1543,23 @@ app.innerHTML = `
       </a>
       <div class="header-search">
         <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        <input class="search" type="search" placeholder="Hledat podle názvu, čísla dílu nebo specifikace…" aria-label="Hledat produkty" data-global-search />
+        <input
+          class="search"
+          type="text"
+          inputmode="search"
+          enterkeyhint="search"
+          name="acc_db_catalog_search"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          data-1p-ignore
+          data-lpignore="true"
+          data-form-type="other"
+          placeholder="Hledat podle názvu, čísla dílu nebo specifikace…"
+          aria-label="Hledat produkty"
+          data-global-search
+        />
       </div>
       <div class="header-actions" data-region="header-actions"></div>
     </header>

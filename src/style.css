@@ -1812,6 +1812,10 @@ textarea:focus {
   color: #a1a1aa;
 }
 
+.upd-token-field .upd-token-input {
+  /* type=text (ne password) — Chrome/Google Password Manager jinak plní hledání + token */
+  -webkit-text-security: disc;
+}
 .upd-token-field input {
   width: 100%;
   box-sizing: border-box;
