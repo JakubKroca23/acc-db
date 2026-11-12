@@ -4,21 +4,25 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { Client, TablesDB, Databases, Permission, Role, Query, ID } from 'node-appwrite'
+import pg from 'pg'
 
-const endpoint = process.env.APPWRITE_ENDPOINT
-const projectId = process.env.APPWRITE_PROJECT_ID
-const apiKey = process.env.APPWRITE_API_KEY
-const databaseId = process.env.APPWRITE_DATABASE_ID || 'acc-db'
-
-if (!endpoint || !projectId || !apiKey) {
-  console.error('Missing APPWRITE_* env')
+const databaseUrl = (process.env.DATABASE_URL || '').trim()
+if (!databaseUrl) {
+  console.error('Missing DATABASE_URL')
   process.exit(1)
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const products = JSON.parse(readFileSync(join(__dirname, 'scraped_products.json'), 'utf8'))
 const categoryMap = JSON.parse(readFileSync(join(__dirname, 'category-map.json'), 'utf8'))
+const initSql = readFileSync(join(__dirname, 'sql', '001_init.sql'), 'utf8')
+
+const UNIT_ELEMENTS = ['ks', 'L', 'm']
+
+function normalizeUnit(unit) {
+  const u = String(unit || 'ks').trim()
+  return UNIT_ELEMENTS.includes(u) ? u : 'ks'
+}
 
 function buildAccessories() {
   return categoryMap.accessories.map((a) => {
@@ -60,295 +64,235 @@ function safeUrl(value) {
   }
 }
 
-const client = new Client().setEndpoint(endpoint).setProject(projectId).setKey(apiKey)
-const db = new TablesDB(client)
-const databases = new Databases(client)
+const client = new pg.Client({ connectionString: databaseUrl })
 
-/** Appwrite enum on accessories/products.unit was created as (ks, L); metráž needs `m`. */
-const UNIT_ELEMENTS = ['ks', 'L', 'm']
-/** Set true after Appwrite accepts `m` on the unit enum. */
-let unitMeterAllowed = false
+async function main() {
+  await client.connect()
+  await client.query(initSql)
 
-function normalizeUnit(unit) {
-  const u = String(unit || 'ks').trim()
-  if (u === 'm' && !unitMeterAllowed) return 'ks'
-  return UNIT_ELEMENTS.includes(u) ? u : 'ks'
-}
-
-function pickUnitAttr(attrsPayload) {
-  const list = attrsPayload?.attributes || attrsPayload?.columns || attrsPayload
-  if (!Array.isArray(list)) return null
-  return list.find((a) => a && a.key === 'unit') || null
-}
-
-async function ensureUnitEnum() {
-  for (const collectionId of ['accessories', 'products']) {
-    try {
-      if (typeof db.updateEnumColumn === 'function') {
-        await db.updateEnumColumn({
-          databaseId,
-          tableId: collectionId,
-          key: 'unit',
-          elements: UNIT_ELEMENTS,
-          required: true,
-          default: 'ks',
-        })
-      } else {
-        await databases.updateEnumAttribute({
-          databaseId,
-          collectionId,
-          key: 'unit',
-          elements: UNIT_ELEMENTS,
-          required: true,
-          default: 'ks',
-        })
-      }
-      console.log('unit enum updated', collectionId, UNIT_ELEMENTS.join(','))
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      console.warn('unit enum update', collectionId, msg)
-    }
-  }
-  // Enum attribute changes are asynchronous in Appwrite.
-  for (let i = 0; i < 20; i++) {
-    await new Promise((r) => setTimeout(r, 1000))
-    try {
-      const attrs = await databases.listAttributes({ databaseId, collectionId: 'accessories' })
-      const unit = pickUnitAttr(attrs)
-      const elements = unit?.elements || []
-      const status = unit?.status
-      if (elements.includes('m') && (!status || status === 'available')) {
-        unitMeterAllowed = true
-        console.log('unit enum ready on accessories:', elements.join(','))
-        return
-      }
-      console.log(`waiting for unit enum… status=${status || '?'} elements=${elements.join(',') || '?'}`)
-    } catch (err) {
-      console.warn('unit enum poll', err instanceof Error ? err.message : err)
-    }
-  }
-  console.warn(
-    'unit enum still without `m` — seeding metráž as unit=ks (set unit enum to ks,L,m in Appwrite Console)',
-  )
-}
-
-async function ensurePriceHistoryTable() {
-  try {
-    await db.getTable({ databaseId, tableId: 'price_history' })
-    console.log('price_history table ok')
-    return
-  } catch {
-    /* create below */
-  }
-  console.log('creating price_history table…')
-  await db.createTable({
-    databaseId,
-    tableId: 'price_history',
-    name: 'price_history',
-    permissions: [Permission.read(Role.any())],
-    rowSecurity: false,
-    enabled: true,
-    columns: [
-      { key: 'productId', type: 'varchar', size: 64, required: true },
-      { key: 'oldPrice', type: 'double', required: true },
-      { key: 'newPrice', type: 'double', required: true },
-      { key: 'oldPriceVat', type: 'double', required: true },
-      { key: 'newPriceVat', type: 'double', required: true },
-      { key: 'recordedAt', type: 'datetime', required: true },
-      { key: 'supplier', type: 'varchar', size: 128, required: false },
-      { key: 'name', type: 'varchar', size: 255, required: false },
-    ],
-    indexes: [
-      { key: 'productId_idx', type: 'key', attributes: ['productId'] },
-      { key: 'recordedAt_idx', type: 'key', attributes: ['recordedAt'] },
-    ],
-  })
-  console.log('price_history created')
-}
-
-await ensurePriceHistoryTable()
-await ensureUnitEnum()
-
-const accessories = buildAccessories()
-
-const REMOVE_ACCESSORIES = ['kos-na-sit', 'meziram', 'zadni-zabrana']
-for (const id of REMOVE_ACCESSORIES) {
-  try {
-    await db.deleteRow({ databaseId, tableId: 'accessories', rowId: id })
+  const accessories = buildAccessories()
+  const REMOVE_ACCESSORIES = ['kos-na-sit', 'meziram', 'zadni-zabrana']
+  for (const id of REMOVE_ACCESSORIES) {
+    await client.query('DELETE FROM accessories WHERE slug = $1', [id])
     console.log('removed accessory', id)
-  } catch {
-    /* already gone */
   }
-}
 
-const keepSlugs = new Set(accessories.map((a) => a.slug))
+  const keepSlugs = new Set(accessories.map((a) => a.slug))
 
-for (const item of accessories) {
-  try {
-    await db.getRow({ databaseId, tableId: 'accessories', rowId: item.slug })
-    await db.updateRow({ databaseId, tableId: 'accessories', rowId: item.slug, data: item })
-    console.log('acc upd', item.slug)
-  } catch {
-    await db.createRow({
-      databaseId,
-      tableId: 'accessories',
-      rowId: item.slug,
-      data: item,
-      permissions: [Permission.read(Role.any())],
-    })
-    console.log('acc new', item.slug)
+  for (const item of accessories) {
+    await client.query(
+      `INSERT INTO accessories (
+         slug, name, category, unit, price_approx, price_min, price_max,
+         source, source_url, note, sort_order, parent_slug
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (slug) DO UPDATE SET
+         name = EXCLUDED.name,
+         category = EXCLUDED.category,
+         unit = EXCLUDED.unit,
+         price_approx = EXCLUDED.price_approx,
+         price_min = EXCLUDED.price_min,
+         price_max = EXCLUDED.price_max,
+         source = EXCLUDED.source,
+         source_url = EXCLUDED.source_url,
+         note = EXCLUDED.note,
+         sort_order = EXCLUDED.sort_order,
+         parent_slug = EXCLUDED.parent_slug`,
+      [
+        item.slug,
+        item.name,
+        item.category,
+        item.unit,
+        item.priceApprox,
+        item.priceMin,
+        item.priceMax,
+        item.source,
+        item.sourceUrl,
+        item.note,
+        item.sortOrder,
+        item.parentSlug,
+      ],
+    )
+    console.log('acc upsert', item.slug)
   }
-}
 
-// Collect stale product IDs first, then delete — never delete mid-cursor pagination
-// (Appwrite cursorAfter fails with general_cursor_not_found if the cursor row was removed).
-let deletedProducts = 0
-const keepIds = new Set(products.filter((p) => p.typeSlug !== 'zadni-zabrana').map(productId))
-const staleIds = []
-let listCursor
-for (;;) {
-  const queries = [Query.limit(100)]
-  if (listCursor) queries.push(Query.cursorAfter(listCursor))
-  const batch = await db.listRows({ databaseId, tableId: 'products', queries })
-  if (!batch.rows.length) break
-  for (const row of batch.rows) {
-    const typeSlug = row.typeSlug
-    if (typeSlug === 'zadni-zabrana' || (keepSlugs.has(typeSlug) && !keepIds.has(row.$id))) {
-      staleIds.push(row.$id)
+  const keepIds = new Set(products.filter((p) => p.typeSlug !== 'zadni-zabrana').map(productId))
+
+  const { rows: existingProducts } = await client.query(
+    'SELECT id, supplier, is_active FROM products',
+  )
+  const dbBySupplier = {}
+  const newBySupplier = {}
+  for (const row of existingProducts) {
+    dbBySupplier[row.supplier] = (dbBySupplier[row.supplier] || 0) + 1
+  }
+  for (const p of products) newBySupplier[p.supplier] = (newBySupplier[p.supplier] || 0) + 1
+
+  const protectedSuppliers = new Set(
+    Object.keys(dbBySupplier).filter(
+      (s) =>
+        dbBySupplier[s] >= 20 &&
+        (newBySupplier[s] || 0) < dbBySupplier[s] * 0.5 &&
+        process.env.SEED_FORCE_DELETE !== '1',
+    ),
+  )
+  if (protectedSuppliers.size) {
+    console.warn(
+      `WARN: scrape looks incomplete for ${[...protectedSuppliers].join(', ')} ` +
+        `(db ${[...protectedSuppliers].map((s) => dbBySupplier[s]).join('/')} → new ${[...protectedSuppliers]
+          .map((s) => newBySupplier[s] || 0)
+          .join('/')}); ` +
+        'keeping their active products (set SEED_FORCE_DELETE=1 to deactivate)',
+    )
+  }
+
+  let deactivated = 0
+  for (const row of existingProducts) {
+    // Soft-deactivate active products missing from this scrape (unless supplier protected)
+    if (!row.is_active) continue
+    if (keepIds.has(row.id)) continue
+    if (protectedSuppliers.has(row.supplier)) continue
+    await client.query('UPDATE products SET is_active = false WHERE id = $1', [row.id])
+    deactivated++
+  }
+  // Also deactivate products whose typeSlug is zadni-zabrana or not in keepSlugs
+  const { rowCount: typeDeact } = await client.query(
+    `UPDATE products SET is_active = false
+     WHERE is_active = true
+       AND (type_slug = 'zadni-zabrana' OR type_slug <> ALL($1::text[]))
+       AND NOT (supplier = ANY($2::text[]))`,
+    [[...keepSlugs], [...protectedSuppliers]],
+  )
+  deactivated += typeDeact || 0
+  console.log('deactivated products', deactivated)
+
+  let created = 0
+  let updated = 0
+  let priceChanges = 0
+
+  for (const p of products) {
+    if (p.typeSlug === 'zadni-zabrana') continue
+    if (!keepSlugs.has(p.typeSlug)) continue
+    const rowId = productId(p)
+    const data = {
+      name: p.name,
+      typeSlug: p.typeSlug,
+      supplier: p.supplier,
+      price: Number(p.price),
+      priceVat: Number(p.priceVat),
+      unit: normalizeUnit(p.unit),
+      dimensions: p.dimensions || null,
+      imageUrl: safeUrl(p.imageUrl),
+      productUrl: safeUrl(p.productUrl),
+      sku: p.sku || null,
+      note: p.note || null,
+      datasheetUrl: safeUrl(p.datasheetUrl) || null,
+    }
+
+    const existing = await client.query(
+      'SELECT id, price, price_vat FROM products WHERE id = $1',
+      [rowId],
+    )
+
+    if (existing.rows.length) {
+      const old = existing.rows[0]
+      const oldPrice = Number(old.price)
+      const oldPriceVat = Number(old.price_vat)
+      const priceChanged =
+        Number.isFinite(oldPrice) &&
+        Number.isFinite(oldPriceVat) &&
+        (Math.abs(oldPrice - data.price) > 0.009 || Math.abs(oldPriceVat - data.priceVat) > 0.009)
+      if (priceChanged) {
+        await client.query(
+          `INSERT INTO price_history (
+             product_id, old_price, new_price, old_price_vat, new_price_vat,
+             recorded_at, supplier, name
+           ) VALUES ($1,$2,$3,$4,$5, now(), $6, $7)`,
+          [rowId, oldPrice, data.price, oldPriceVat, data.priceVat, data.supplier, data.name],
+        )
+        priceChanges++
+      }
+      await client.query(
+        `UPDATE products SET
+           name = $2, type_slug = $3, supplier = $4, price = $5, price_vat = $6, unit = $7,
+           dimensions = $8, image_url = $9, product_url = $10, sku = $11, note = $12,
+           datasheet_url = $13, is_active = true, last_seen_at = now()
+         WHERE id = $1`,
+        [
+          rowId,
+          data.name,
+          data.typeSlug,
+          data.supplier,
+          data.price,
+          data.priceVat,
+          data.unit,
+          data.dimensions,
+          data.imageUrl,
+          data.productUrl,
+          data.sku,
+          data.note,
+          data.datasheetUrl,
+        ],
+      )
+      updated++
+    } else {
+      await client.query(
+        `INSERT INTO products (
+           id, name, type_slug, supplier, price, price_vat, unit,
+           dimensions, image_url, product_url, sku, note, datasheet_url,
+           is_active, last_seen_at
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, true, now())`,
+        [
+          rowId,
+          data.name,
+          data.typeSlug,
+          data.supplier,
+          data.price,
+          data.priceVat,
+          data.unit,
+          data.dimensions,
+          data.imageUrl,
+          data.productUrl,
+          data.sku,
+          data.note,
+          data.datasheetUrl,
+        ],
+      )
+      created++
+    }
+
+    if ((created + updated) % 100 === 0) {
+      console.log(`products progress ${created + updated}/${products.length}`)
     }
   }
-  if (batch.rows.length < 100) break
-  listCursor = batch.rows[batch.rows.length - 1].$id
-}
-// Safety net: if a supplier's scrape came back much smaller than what the DB holds
-// (network/TLS failure, site outage), do NOT delete that supplier's rows — keep the
-// last known-good catalogue instead of wiping it.
-const dbBySupplier = {}
-const newBySupplier = {}
-const staleSupplier = new Map()
-{
-  let cur
-  for (;;) {
-    const queries = [Query.limit(100), Query.select(['$id', 'supplier'])]
-    if (cur) queries.push(Query.cursorAfter(cur))
-    const batch = await db.listRows({ databaseId, tableId: 'products', queries })
-    for (const row of batch.rows) {
-      dbBySupplier[row.supplier] = (dbBySupplier[row.supplier] || 0) + 1
-      staleSupplier.set(row.$id, row.supplier)
-    }
-    if (batch.rows.length < 100) break
-    cur = batch.rows[batch.rows.length - 1].$id
-  }
-}
-for (const p of products) newBySupplier[p.supplier] = (newBySupplier[p.supplier] || 0) + 1
-const protectedSuppliers = new Set(
-  Object.keys(dbBySupplier).filter(
-    (s) => dbBySupplier[s] >= 20 && (newBySupplier[s] || 0) < dbBySupplier[s] * 0.5 && process.env.SEED_FORCE_DELETE !== '1',
-  ),
-)
-if (protectedSuppliers.size) {
-  console.warn(
-    `WARN: scrape looks incomplete for ${[...protectedSuppliers].join(', ')} ` +
-      `(db ${[...protectedSuppliers].map((s) => dbBySupplier[s]).join('/')} → new ${[...protectedSuppliers].map((s) => newBySupplier[s] || 0).join('/')}); ` +
-      'keeping their existing products (set SEED_FORCE_DELETE=1 to override)',
+
+  const accCount = (await client.query('SELECT count(*)::int AS n FROM accessories')).rows[0].n
+  const prodCount = (
+    await client.query('SELECT count(*)::int AS n FROM products WHERE is_active = true')
+  ).rows[0].n
+  const historyTotal = (await client.query('SELECT count(*)::int AS n FROM price_history')).rows[0].n
+
+  console.log(`accessories: ${accCount}`)
+  console.log(`products (active): ${prodCount} (created ${created}, updated ${updated}, deactivated ${deactivated})`)
+  console.log(`price_history: ${historyTotal} (new changes this run ${priceChanges})`)
+  console.log(
+    JSON.stringify({
+      ok: true,
+      accessories: accCount,
+      products: prodCount,
+      created,
+      updated,
+      deactivated,
+      priceChanges,
+      priceHistoryTotal: historyTotal,
+    }),
   )
 }
-for (const rowId of staleIds) {
-  if (protectedSuppliers.has(staleSupplier.get(rowId))) continue
-  try {
-    await db.deleteRow({ databaseId, tableId: 'products', rowId })
-    deletedProducts++
-  } catch {
-    /* ignore */
-  }
-}
-console.log('deleted stale products', deletedProducts)
 
-let created = 0
-let updated = 0
-let priceChanges = 0
-for (const p of products) {
-  if (p.typeSlug === 'zadni-zabrana') continue
-  if (!keepSlugs.has(p.typeSlug)) continue
-  const rowId = productId(p)
-  const data = {
-    name: p.name,
-    typeSlug: p.typeSlug,
-    supplier: p.supplier,
-    price: Number(p.price),
-    priceVat: Number(p.priceVat),
-    unit: normalizeUnit(p.unit),
-    dimensions: p.dimensions || null,
-    imageUrl: safeUrl(p.imageUrl),
-    productUrl: safeUrl(p.productUrl),
-    sku: p.sku || null,
-    note: p.note || null,
-  }
-  try {
-    const existing = await db.getRow({ databaseId, tableId: 'products', rowId })
-    const oldPrice = Number(existing.price)
-    const oldPriceVat = Number(existing.priceVat)
-    const priceChanged =
-      Number.isFinite(oldPrice) &&
-      Number.isFinite(oldPriceVat) &&
-      (Math.abs(oldPrice - data.price) > 0.009 || Math.abs(oldPriceVat - data.priceVat) > 0.009)
-    if (priceChanged) {
-      await db.createRow({
-        databaseId,
-        tableId: 'price_history',
-        rowId: ID.unique(),
-        data: {
-          productId: rowId,
-          oldPrice,
-          newPrice: data.price,
-          oldPriceVat,
-          newPriceVat: data.priceVat,
-          recordedAt: new Date().toISOString(),
-          supplier: data.supplier,
-          name: data.name,
-        },
-        permissions: [Permission.read(Role.any())],
-      })
-      priceChanges++
-    }
-    await db.updateRow({ databaseId, tableId: 'products', rowId, data })
-    updated++
-  } catch {
-    await db.createRow({
-      databaseId,
-      tableId: 'products',
-      rowId,
-      data,
-      permissions: [Permission.read(Role.any())],
-    })
-    created++
-  }
-  if ((created + updated) % 100 === 0) {
-    console.log(`products progress ${created + updated}/${products.length}`)
-  }
-}
-
-const acc = await db.listRows({ databaseId, tableId: 'accessories', queries: [Query.limit(100)] })
-const prod = await db.listRows({ databaseId, tableId: 'products', queries: [Query.limit(1)] })
-let historyTotal = 0
 try {
-  const ph = await db.listRows({ databaseId, tableId: 'price_history', queries: [Query.limit(1)] })
-  historyTotal = ph.total
-} catch {
-  /* ignore */
+  await main()
+} catch (err) {
+  console.error(err)
+  process.exitCode = 1
+} finally {
+  await client.end().catch(() => {})
 }
-console.log(`accessories: ${acc.total}`)
-console.log(`products: ${prod.total} (created ${created}, updated ${updated})`)
-console.log(`price_history: ${historyTotal} (new changes this run ${priceChanges})`)
-console.log(
-  JSON.stringify({
-    ok: true,
-    accessories: acc.total,
-    products: prod.total,
-    created,
-    updated,
-    deletedProducts,
-    priceChanges,
-    priceHistoryTotal: historyTotal,
-  }),
-)

@@ -4,13 +4,27 @@ import { createHash } from 'node:crypto'
 import { gzipSync } from 'node:zlib'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Client, TablesDB, Query } from 'node-appwrite'
 import { SHIPPING_RATES, SHIPPING_AVG } from '../shipping.ts'
 import { getCatalogUpdateStatus, startCatalogUpdate, stopCatalogUpdate } from './catalog-update.ts'
 import { handleImageProxy } from './image-proxy.ts'
-import { createChatHandler } from './chat.ts'
+import { hasDatabaseUrl } from './db.ts'
+import {
+  listAccessories,
+  listProducts,
+  priceHistory,
+  type AccessoryRow,
+  type ProductRow,
+} from './catalog-repo.ts'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+
+export class CatalogUnavailableError extends Error {
+  constructor(cause?: unknown) {
+    const detail = cause instanceof Error ? cause.message : cause ? String(cause) : ''
+    super(detail ? `Katalog není dostupný: ${detail}` : 'Katalog není dostupný (PostgreSQL)')
+    this.name = 'CatalogUnavailableError'
+  }
+}
 
 function loadCategoryMap() {
   try {
@@ -40,93 +54,23 @@ type GateLike = {
 }
 
 export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
-  const databaseId = env.APPWRITE_DATABASE_ID || 'acc-db'
   const updateToken = env.ACC_DB_UPDATE_TOKEN || ''
-  const assistant = createChatHandler(env, {
-    loadCatalog: () => loadCatalog(),
-    categoryMap: () => loadCategoryMap(),
-    priceHistory: async (productId: string) =>
-      (await fetchAllRows('price_history', [Query.equal('productId', productId), Query.orderDesc('recordedAt')])).map((row) => ({
-        recordedAt: String(row.recordedAt),
-        oldPrice: Number(row.oldPrice),
-        newPrice: Number(row.newPrice),
-        oldPriceVat: Number(row.oldPriceVat),
-        newPriceVat: Number(row.newPriceVat),
-      })),
-  })
-
-  function client() {
-    return new Client()
-      .setEndpoint(env.APPWRITE_ENDPOINT!)
-      .setProject(env.APPWRITE_PROJECT_ID!)
-      .setKey(env.APPWRITE_API_KEY!)
-  }
-
-  async function fetchAllRows(tableId: string, extraQueries: string[] = []) {
-    const tablesDB = new TablesDB(client())
-    const all: Record<string, unknown>[] = []
-    let cursor: string | undefined
-    for (let page = 0; page < 400; page++) {
-      const queries = [...extraQueries, Query.limit(100)]
-      if (cursor) queries.push(Query.cursorAfter(cursor))
-      const result = await tablesDB.listRows({ databaseId, tableId, queries })
-      all.push(...result.rows)
-      if (result.rows.length < 100) break
-      cursor = result.rows[result.rows.length - 1].$id
-    }
-    return all
-  }
-
-  function mapAccessory(row: Record<string, unknown>) {
-    return {
-      id: row.$id as string,
-      name: row.name as string,
-      category: row.category as string,
-      unit: row.unit as 'ks' | 'L',
-      priceApprox: Number(row.priceApprox),
-      sortOrder: Number(row.sortOrder),
-      slug: row.slug as string,
-      parentSlug: (row.parentSlug as string) || null,
-      relatedGroup: (() => {
-        const note = (row.note as string) || ''
-        const m = note.match(/^related:(.+)$/)
-        return m ? m[1] : null
-      })(),
-    }
-  }
-
-  function mapProduct(row: Record<string, unknown>) {
-    return {
-      id: row.$id as string,
-      name: row.name as string,
-      typeSlug: row.typeSlug as string,
-      supplier: row.supplier as string,
-      price: Number(row.price),
-      priceVat: Number(row.priceVat),
-      unit: (row.unit as 'ks' | 'L') || 'ks',
-      dimensions: (row.dimensions as string) || null,
-      imageUrl: (row.imageUrl as string) || null,
-      productUrl: (row.productUrl as string) || null,
-      sku: (row.sku as string) || null,
-      note: (row.note as string) || null,
-      datasheetUrl: (row.datasheetUrl as string) || null,
-    }
-  }
+  const usePg = hasDatabaseUrl(env)
 
   function loadLocalCatalog() {
     const cmap = loadCategoryMap()
-    const accessories = cmap.accessories.map((a) => ({
+    const accessories: AccessoryRow[] = cmap.accessories.map((a) => ({
       id: a.slug,
       name: a.name,
       category: a.category,
-      unit: a.unit as 'ks' | 'L',
+      unit: a.unit as 'ks' | 'L' | 'm',
       priceApprox: a.priceApprox,
       sortOrder: a.sortOrder,
       slug: a.slug,
       parentSlug: a.parentSlug,
       relatedGroup: a.relatedGroup,
     }))
-    let products: ReturnType<typeof mapProduct>[] = []
+    let products: ProductRow[] = []
     try {
       const raw = readFileSync(join(__dirname, '../../scripts/scraped_products.json'), 'utf8')
       const items = JSON.parse(raw) as {
@@ -154,7 +98,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
             supplier: p.supplier,
             price: Number(p.price),
             priceVat: Number(p.priceVat),
-            unit: (p.unit as 'ks' | 'L') || 'ks',
+            unit: (p.unit as 'ks' | 'L' | 'm') || 'ks',
             dimensions: p.dimensions || null,
             imageUrl: p.imageUrl || null,
             productUrl: p.productUrl || null,
@@ -171,36 +115,30 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
 
   let catalogCache: {
     at: number
-    accessories: ReturnType<typeof mapAccessory>[]
-    products: ReturnType<typeof mapProduct>[]
+    accessories: AccessoryRow[]
+    products: ProductRow[]
   } | null = null
 
   async function loadCatalog() {
     if (catalogCache && Date.now() - catalogCache.at < 60_000) {
       return { accessories: catalogCache.accessories, products: catalogCache.products }
     }
+    if (!usePg) {
+      const local = loadLocalCatalog()
+      catalogCache = { at: Date.now(), ...local }
+      return local
+    }
     try {
-      const [accRows, prodRows] = await Promise.all([
-        fetchAllRows('accessories', [Query.orderAsc('sortOrder')]),
-        fetchAllRows('products'),
-      ])
-      const accessories = accRows
-        .map(mapAccessory)
-        .filter((a) => a.category !== 'Vlastní výroba' && a.slug !== 'zadni-zabrana')
-      const products = prodRows.map(mapProduct).filter((p) => p.typeSlug !== 'zadni-zabrana')
-      if (!products.length && !accessories.length) return loadLocalCatalog()
+      const [accessories, products] = await Promise.all([listAccessories(env), listProducts(env)])
       catalogCache = { at: Date.now(), accessories, products }
       return { accessories, products }
     } catch (err) {
-      console.warn('[acc-db] Appwrite unavailable, using local scraped_products.json', err)
-      return loadLocalCatalog()
+      console.error('[acc-db] PostgreSQL unavailable', err)
+      throw new CatalogUnavailableError(err)
     }
   }
 
-  function buildStats(
-    accessories: ReturnType<typeof mapAccessory>[],
-    products: ReturnType<typeof mapProduct>[],
-  ) {
+  function buildStats(accessories: AccessoryRow[], products: ProductRow[]) {
     const bySupplier: Record<string, number> = {}
     const byType: Record<string, number> = {}
     let minVat = Infinity
@@ -241,6 +179,7 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       shipping: { rates: SHIPPING_RATES, averageParcel: SHIPPING_AVG },
       updatedAt: new Date().toISOString(),
       catalogUpdate: getCatalogUpdateStatus(),
+      backend: usePg ? 'postgres' : 'json',
     }
   }
 
@@ -251,7 +190,6 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
     res.setHeader('Cache-Control', 'no-store')
     const payload = Buffer.from(JSON.stringify(body))
-    // full catalogue („Vše“) is ~400 kB of JSON → ~60 kB gzipped
     if (payload.length > 8192 && gzipOk.has(res)) {
       res.setHeader('Content-Encoding', 'gzip')
       res.setHeader('Vary', 'Accept-Encoding')
@@ -271,11 +209,10 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
   }
 
   function checkUpdateAuth(req: IncomingMessage): boolean {
-    if (!updateToken) return true // private deploy: allow if token not configured
+    if (!updateToken) return true
     const header = req.headers['x-update-token']
     const token = Array.isArray(header) ? header[0] : header
     if (token && token === updateToken) return true
-    // also allow Authorization: Bearer …
     const auth = req.headers.authorization
     if (auth && auth === `Bearer ${updateToken}`) return true
     return false
@@ -318,7 +255,6 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         const counts: Record<string, number> = {}
         for (const p of products) counts[p.typeSlug] = (counts[p.typeSlug] || 0) + 1
 
-        // Merge DB accessories with map metadata (related groups)
         const bySlug = new Map(accessories.map((a) => [a.slug, a]))
         for (const a of cmap.accessories) {
           const existing = bySlug.get(a.slug)
@@ -422,26 +358,16 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
           json(res, 400, { error: 'productId required' })
           return
         }
+        if (!usePg) {
+          json(res, 200, { items: [], total: 0 })
+          return
+        }
         try {
-          const rows = await fetchAllRows('price_history', [
-            Query.equal('productId', productId),
-            Query.orderDesc('recordedAt'),
-          ])
-          const items = rows.map((row) => ({
-            id: row.$id as string,
-            productId: row.productId as string,
-            oldPrice: Number(row.oldPrice),
-            newPrice: Number(row.newPrice),
-            oldPriceVat: Number(row.oldPriceVat),
-            newPriceVat: Number(row.newPriceVat),
-            recordedAt: row.recordedAt as string,
-            supplier: (row.supplier as string) || null,
-            name: (row.name as string) || null,
-          }))
+          const items = await priceHistory(productId, env)
           json(res, 200, { items, total: items.length })
         } catch (err) {
-          // Table may not exist yet before first seed
-          json(res, 200, { items: [], total: 0 })
+          console.error('[acc-db] price-history failed', err)
+          throw new CatalogUnavailableError(err)
         }
         return
       }
@@ -454,6 +380,10 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       if (method === 'POST' && pathOnly === '/api/catalog/update') {
         if (!checkUpdateAuth(req)) {
           json(res, 401, { error: 'Unauthorized — missing or invalid X-Update-Token' })
+          return
+        }
+        if (!usePg) {
+          json(res, 503, { error: 'Seed vyžaduje DATABASE_URL (PostgreSQL)' })
           return
         }
         const body = await readBody(req)
@@ -484,17 +414,6 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
         return
       }
 
-      // AI assistant (Ollama) — behind the auth gate like everything under /acc-db
-      if (method === 'POST' && pathOnly === '/api/chat') {
-        await assistant.chat(req, res)
-        return
-      }
-
-      if (method === 'GET' && pathOnly === '/api/chat/status') {
-        await assistant.status(req, res)
-        return
-      }
-
       if (method !== 'GET') {
         json(res, 405, { error: 'Method Not Allowed' })
         return
@@ -502,6 +421,10 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
 
       next()
     } catch (err) {
+      if (err instanceof CatalogUnavailableError) {
+        if (!res.headersSent) json(res, 503, { error: err.message })
+        return
+      }
       const message = err instanceof Error ? err.message : 'Unknown error'
       if (res.headersSent) {
         res.end()
@@ -510,6 +433,6 @@ export function createApiHandler(env: Record<string, string>, gate?: GateLike) {
       json(res, 500, { error: message })
     }
   }
-  /** called once when the HTTP server starts (not during `vite build`) */
-  return Object.assign(handler, { onServerStart: () => assistant.warmup() })
+
+  return Object.assign(handler, { onServerStart: () => {} })
 }

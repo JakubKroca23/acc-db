@@ -11,9 +11,7 @@ function apiPlugin(env: Record<string, string>): Plugin {
   } else {
     console.log('[acc-db auth] gate OFF (set ACC_DB_AUTH=manager to require the Manager login)')
   }
-  console.log(`[acc-db chat] Ollama ${env.OLLAMA_URL || 'http://ollama:11434'} · model ${env.OLLAMA_MODEL || 'qwen2.5:3b'}`)
-  console.log(`[acc-db chat] GroqCloud ${env.GROQ_API_KEY ? `on (key set) · models ${env.GROQ_MODELS || 'auto (all chat models of the key)'}` : 'off (no GROQ_API_KEY)'}`)
-  console.log(`[acc-db chat] Gemini ${env.GEMINI_API_KEY ? `on (key set) · models ${env.GEMINI_MODELS || 'gemini-2.5-flash,gemini-flash-latest'}` : 'off (no GEMINI_API_KEY)'}`)
+  console.log(`[acc-db data] ${env.DATABASE_URL ? 'PostgreSQL (DATABASE_URL set)' : 'JSON fallback (no DATABASE_URL)'}`)
   return {
     name: 'acc-db-api',
     configureServer(server) {

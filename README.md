@@ -1,81 +1,54 @@
 # ACC-DB — Kalkulačka příslušenství vozidla
 
 Profesionální katalog a cenový odhad příslušenství pro stavitele nástaveb (české UI).
-Data: **Appwrite TablesDB** (`acc-db`) — tabulky `accessories` a `products`.
+Data: **PostgreSQL** (`accessories`, `products`, `price_history`). Auth: Contsystem Manager (Appwrite session cookie).
 
 Produkce: https://zakazky.contsystem.cz/acc-db/
+
+Agent paměť: [`AGENTS.md`](AGENTS.md) · [`docs/`](docs/)
 
 ## Funkce
 
 - Procházení kategorií (Podvozek, Všechny nástavby, Hákový nosič, Ostatní)
 - Globální vyhledávání + filtr dodavatele
 - **Související** skupiny (např. blatníky ↔ držáky ↔ zástěrky; boxy ↔ držáky boxů)
-- **Historie cen** při seedu (tabulka `price_history`) — v detailu produktu / nabídce
-- **Cenová nabídka** (tlačítko v hlavičce s průběžnou cenou bez DPH, celostránkové zobrazení `#/nabidka`) s mezisoučty dle dodavatele, dopravou, tiskem/PDF, CSV a kopírováním do schránky; filtr dodavatele je v hlavičce před vyhledáváním
+- **Historie cen** při seedu — v detailu produktu / nabídce
+- **Cenová nabídka** (`#/nabidka`) s mezisoučty dle dodavatele, dopravou, tiskem/PDF, CSV
 - Tlačítko **Aktualizovat katalog** (scrape + seed) se stavem průběhu
 
 ## Spuštění
 
 ```bash
-cp .env.example .env   # doplň APPWRITE_API_KEY a ACC_DB_UPDATE_TOKEN
+cp .env.example .env   # POSTGRES_* + DATABASE_URL + ACC_DB_UPDATE_TOKEN
 npm install
-npm run scrape         # ALSAP + Trans-Technik (+ Hydrotruck)
-npm run seed           # sync do Appwrite
+docker compose up -d postgres   # nebo vlastní PG
+npm run scrape         # ALSAP + Trans-Technik (+ …)
+npm run seed           # sync do Postgres
 npm run dev            # http://localhost:5173/acc-db/
 ```
 
+Bez `DATABASE_URL` API čte `scripts/scraped_products.json` (dev/demo).  
+S `DATABASE_URL` a nedostupným Postgres → HTTP **503**.
+
 ## Přístup (login Contsystem Manageru)
 
-Aplikace je dostupná jen uživatelům přihlášeným v Contsystem Manageru (`cs-zakazky`, stejná doména) s rolí z `ACC_DB_ALLOWED_ROLES` (výchozí `dev`).
+Aplikace je dostupná jen uživatelům přihlášeným v Contsystem Manageru (`cs-zakazky`) s rolí z `ACC_DB_ALLOWED_ROLES`.
 
-- Manager ukládá Appwrite session do httpOnly cookie `a_session_contsystem` (path `/`), prohlížeč ji posílá i na `/acc-db/`.
-- Server (`src/server/auth-gate.ts`) ji před každým požadavkem (HTML, assety, všechna `/api/*`) ověří přes `GET https://appwrite.propoj.app/v1/account` (projekt `contsystem`, hlavička `X-Appwrite-Session`) a zkontroluje Appwrite labels uživatele. Výsledek se cachuje 60 s (podle SHA-256 secretu). Není potřeba žádný API klíč.
-- Nepřihlášen: HTML → 302 na `/login?next=%2Facc-db%2F`, API → 401 JSON. Bez role: 403 („Nemáte přístup — aplikace je zatím dostupná jen pro vývojáře“). Appwrite nedostupný: 503 (fail closed).
-- `GET /api/me` vrací přihlášeného uživatele (jméno v hlavičce, odkaz zpět do Manageru).
-- Zapnutí: `ACC_DB_AUTH=manager` (v `docker-compose.yml` výchozí); lokální vývoj bez něj běží bez přihlášení. Nouzové vypnutí: `ACC_DB_AUTH=off` v `.env` na serveru.
+- Cookie `a_session_contsystem` → `auth-gate.ts` → Appwrite `/account` (projekt `contsystem`)
+- Zapnutí: `ACC_DB_AUTH=manager` (v compose výchozí); lokálně bez něj bez přihlášení
 
-## API (Vite middleware, base `/acc-db/`)
+## API (base `/acc-db/`)
 
 | Method | Path | Popis |
 |--------|------|--------|
 | GET | `/api/categories` | strom kategorií + related groups |
 | GET | `/api/accessories` | druhy příslušenství |
-| GET | `/api/products?type=&supplier=&q=` | produkty |
-| GET | `/api/stats` | statistiky + poslední update |
-| GET | `/api/price-history?productId=` | historie změn ceny produktu |
-| GET/HEAD | `/api/img?url=` | proxy + cache náhledů (jen https z ALSAP / Trans-Technik / Hydrotruck, pouze rastrové obrázky, max 6 MB; `.jpg` 404 → zkusí `.webp`) |
-| POST | `/api/catalog/update` | spustí scrape+seed (volitelně `X-Update-Token`) |
+| GET | `/api/products?type=&supplier=&q=` | produkty (jen `is_active`) |
+| GET | `/api/stats` | statistiky |
+| GET | `/api/price-history?productId=` | historie cen |
+| GET/HEAD | `/api/img?url=` | proxy náhledů |
+| POST | `/api/catalog/update` | scrape+seed |
 | GET | `/api/catalog/update/status` | stav jobu |
-| POST | `/api/chat` | AI asistent Kapitán Karel: `{ messages, context?, model? }` → NDJSON stream (Ollama nebo GroqCloud) |
-| GET | `/api/chat/status` | dostupné modely (`groq:*`, `ollama:*`) + výchozí |
-
-Token: `ACC_DB_UPDATE_TOKEN` v `.env`. Pokud není nastaven, update je povolen (vhodné jen pro privátní deploy).
-
-## Kategorie a related groups
-
-Mapování dodavatelských URL → `typeSlug` je v `scripts/category-map.json`.
-Related skupiny (kits):
-
-- blatníky + držáky blatníků + zástěrky
-- box na nářadí + držáky boxů
-- hasicí bedny + držáky hasičů
-- nádoby na vodu + držáky kanystrů
-- podložky pod podpěry (podkládací desky) + boxy/klece na tyto desky (Hydrotruck)
-- čerpadlo + olejová nádrž + olej
-
-## Scraper
-
-```bash
-npm run scrape   # → scripts/scraped_products.json
-npm run seed
-```
-
-Opravy oproti 1. verzi:
-
-- ALSAP stránkování `?f=OFFSET` (ne `strana=`)
-- leaf kategorie místo rodičů s JS pagerem
-- Trans-Technik: `product-types-card` **i** `product-types-table`
-- TT card ceny jsou **bez DPH** (dříve chybně dělené 1.21)
 
 ## Docker
 
@@ -83,63 +56,14 @@ Opravy oproti 1. verzi:
 docker compose up -d --build
 ```
 
-Image obsahuje Python 3 kvůli aktualizaci katalogu z UI.
+Služby: `postgres` (`postgres:16-alpine`, healthcheck) + `app` (`depends_on: service_healthy`).
 
-## AI asistent „Kapitán Karel“ (Ollama)
+## Seed / soft-delete
 
-Plovoucí tlačítko s maskotem „Kapitán Karel“ (pirátský robot, `src/assets/kapitan-karel*.png`) vpravo dole otevře chatovací panel (`src/chat-widget.ts`). Server (`src/server/chat.ts`) přeposílá konverzaci na Ollamu (`/api/chat`, `stream: true`) a NDJSON stream posílá rovnou do prohlížeče; je za stejnou auth gate jako zbytek aplikace.
-
-- Env: `OLLAMA_URL` (výchozí `http://ollama:11434`), `OLLAMA_MODEL` (výchozí `qwen2.5:3b`), `OLLAMA_TIMEOUT_MS` (výchozí 150000), volitelně `OLLAMA_NUM_CTX` (jinak výchozí Ollamy; změna = znovunačtení modelu), `OLLAMA_WARMUP=off` (vypne předpočítání systémového promptu po startu).
-- Kontext obrazovky: s každým dotazem posílá frontend kompaktní JSON (`chatContext()` v `src/main.ts`): stránka (katalog / hledání / `#/nabidka`), kategorie + související, filtr dodavatele, hledaný text, počet produktů, produkty viditelné na obrazovce (max. 10), produkt s otevřenou „Historií cen“ a obsah cenové nabídky se součty. Server ho očistí a omezí (max. 8 kB, hloubka 5), převede na úsporný odsazený text a vloží do poslední zprávy uživatele jako „Aktuální obrazovka uživatele: …“; model má o produktech a cenách mluvit jen podle něj.
-- Výkon: CPU na VPS vyhodnocuje prompt jen ~30 tokenů/s. Proto je systémový prompt vždy stejný prefix (Ollama ho má v cache; po startu serveru se předpočítá), kontext obrazovky je malý (~1 kB) a jde až do poslední zprávy.
-- Limity: max. 20 posledních zpráv, 4000 znaků na zprávu, ~8 000 znaků celkem. Chyby česky; Ollama nedostupná → 503 „Kapitán Karel zatím není dostupný (Ollama na serveru neběží).“
-- Na VPS běží Ollama jako kontejner `ollama` (port jen `127.0.0.1:11434`, není veřejný). acc-db na ni vidí přes sdílenou docker síť `ollama` (v `docker-compose.yml` jako external):
-  ```bash
-  docker network create ollama            # jednou
-  docker network connect ollama ollama    # po každém novém vytvoření kontejneru ollama (nebo `docker run --network ollama …`)
-  ```
-- **GroqCloud**: když je v `.env` na serveru `GROQ_API_KEY`, nabídne panel v hlavičce přepínač modelu (volba se pamatuje v `localStorage`, klíč `acc-db-chat-model`). Seznam = automaticky všechny chatovací modely, které klíč vrací v `/models` (bez Whisper/Orpheus, prompt-guard, `gpt-oss-safeguard-20b` – limit 2K tokenů/min je menší než jeden dotaz – a `allam-2-7b` – nezvládá češtinu), výchozí `openai/gpt-oss-120b`; `GROQ_MODELS` = volitelný přesný seznam/pořadí. Rozbalovací výběr modelu ukazuje u každého modelu pruhy limitů: Požadavky/den a Tokeny/min z hlaviček odpovědí GroqCloud (platí pro celou organizaci), Požadavky/min a Tokeny/den z místních počítadel aplikace (limity free tieru, přepsatelné `GROQ_LIMITS` JSON); stav se ukládá do svazku `acc-db-state` (`CHAT_STATE_FILE`). Model bez dat se při otevření výběru jednou „oťukne“ požadavkem s `max_tokens: 1`. Krátké čekání na limit (≤ 12 s) server přečká sám, delší vrátí 429 s odpočtem a nabídkou jiného modelu. Server volá `https://api.groq.com/openai/v1/chat/completions` (`stream: true`, SSE) a převádí stream na stejné NDJSON `{message:{content}}` jako u Ollamy; klíč se do prohlížeče nikdy nedostane. Povolené jsou jen modely ze seznamu (`GET /api/chat/status` → `models`, `default`). Chyby Groq česky (401 neplatný klíč, 429 vyčerpaný limit + `Retry-After`).
-- Historie konverzace je jen v `sessionStorage` prohlížeče; nic se neukládá na server.
+Produkty chybějící ve scrapu se **deaktivují** (`is_active = false`), nemažou se — `price_history` zůstane. Ochrana neúplného scrape dodavatele: `SEED_FORCE_DELETE=1`.
 
 ## Poznámky
 
-- Ceny jsou orientační z veřejných katalogů — ne závazný ceník.
-- Appwrite API klíč zůstává na serveru; frontend volá jen `/api/*`.
-- Položky nabídky a poznámka jsou v `localStorage` (klíč `acc-db-cart-v2` zachován kvůli kompatibilitě).
-
-## Appwrite / offline fallback
-
-Pokud `APPWRITE_API_KEY` není platný, API automaticky čte `scripts/scraped_products.json`
-a `scripts/category-map.json` (vhodné pro vývoj a demo). Pro produkční sync spusťte
-`npm run seed` s klíčem, který má práva na TablesDB `acc-db`.
-
-Hydrotruck scrape může selhat na SSL z některých sítí — skript zkusí insecure fallback;
-podložky pod podpěry / boxy na desky jsou na `hydrotruck.cz/podlozky-pod-patky-podper`.
-Pokud HT zůstane nedostupný, seed použije tržní odhad jen pro podkládací desky.
-
-## Náhledy (obrázky)
-
-- Scraper bere obrázek z `<picture><source srcset>` (Hydrotruck má u `<img src>` často
-  neexistující `.jpg`, reálný soubor je jen `.webp`), z lazy-load atributů
-  (`data-src`, `data-srcset`, `srcset`) a relativní URL převádí na absolutní.
-- Na konci scrape se každá URL obrázku ověří (HTTP 200 + magic bytes — Trans-Technik
-  neposílá `Content-Type`). Mrtvé URL se opraví (`.jpg`→`.webp`, `og:image` z detailu
-  produktu), jinak se uloží `null`. Přeskočení: `SKIP_IMAGE_VERIFY=1 npm run scrape`.
-- Frontend načítá všechny náhledy přes `/acc-db/api/img?url=…` (vlastní origin, cache
-  v paměti + `/tmp/acc-db-img-cache`, `Cache-Control: max-age=7 dní`), takže nevadí
-  hotlinking, chybějící `Content-Type` ani výpadky TLS u Hydrotrucku. Funguje i v tisku/PDF.
-- `category-map.json` → položka může mít `maxPages` (Hydrotruck čerpadla mají ~20 stran,
-  záměrně bereme jen první stranu). Když zdrojová stránka selže (HT občas vrací chybovou
-  stránku 500), převezmou se poslední známé produkty dané kategorie, aby je seed nesmazal.
-
-### Nástroje Kapitána Karla (function calling)
-
-Modely GroqCloud mají nástroje (smyčka max. 5 kroků na serveru, `src/server/chat-tools.ts`):
-- čtení (server, jen čtení z acc-db): `hledat_produkty`, `detail_produktu`, `seznam_kategorii`, `stav_nabidky` (z obsahu nabídky, který posílá prohlížeč);
-- akce (server je ověří a pošle prohlížeči jako událost `action`, prohlížeč je provede a ukáže štítek s „Zpět“): `otevrit_kategorii`, `nastavit_filtr_dodavatele`, `hledat_v_katalogu`, `otevrit_detail_produktu`, `pridat_do_nabidky`, `zmenit_mnozstvi_v_nabidce`, `odebrat_z_nabidky`, `otevrit_nabidku`. Žádný zápis do Appwrite, žádné mazání celé nabídky.
-
-Lokální `qwen2.5:3b` má nástroje vypnuté (na CPU serveru ~2 min na dotaz a „přidával“ bez volání nástroje); zapnutí `OLLAMA_TOOLS=on` (malá sada) / `all` / seznam, pak doporučeno `OLLAMA_NUM_CTX=8192`. `GROQ_TOOLS=off` vypne nástroje pro Groq.
-
-### Google Gemini
-
-Když je v `.env` na serveru `GEMINI_API_KEY`, nabídne panel i modely Gemini (OpenAI-kompatibilní endpoint `https://generativelanguage.googleapis.com/v1beta/openai`, streaming + nástroje jako u Groq). Výchozí `GEMINI_MODELS=gemini-2.5-flash,gemini-flash-latest` (Pro modely free tier nepovoluje). Gemini nevrací hlavičky limitů → aplikace počítá požadavky/min, požadavky/den (reset o půlnoci pacifického času) a tokeny/min sama proti konzervativním limitům free tieru (2.5 Flash 10 RPM / 250 RPD, Flash latest 5 RPM / 20 RPD; skutečné hodnoty jsou jen v AI Studiu) – úprava `GEMINI_LIMITS` (JSON). `GEMINI_TOOLS=off` vypne nástroje.
+- Ceny jsou orientační z veřejných katalogů.
+- Frontend volá jen `/api/*`; Postgres credentials zůstávají na serveru.
+- Položky nabídky: `localStorage` klíč `acc-db-cart-v2`.

@@ -4,6 +4,26 @@
 #   docker compose up -d --build
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: acc-db-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-acc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-acc_db}
+    ports:
+      - "127.0.0.1:54331:5432"
+    volumes:
+      - acc-db-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - acc-db
+
   app:
     build:
       context: .
@@ -14,24 +34,16 @@ services:
       - .env
     environment:
       - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-acc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-acc_db}}
       # Přístup jen pro přihlášené v Contsystem Manageru s rolí (Appwrite label) z ACC_DB_ALLOWED_ROLES.
       # Vypnutí (nouzově): ACC_DB_AUTH=off v .env a `docker compose up -d`.
       - ACC_DB_AUTH=${ACC_DB_AUTH:-manager}
       - ACC_DB_ALLOWED_ROLES=${ACC_DB_ALLOWED_ROLES:-*}
       - MANAGER_APPWRITE_ENDPOINT=${MANAGER_APPWRITE_ENDPOINT:-https://appwrite.propoj.app/v1}
       - MANAGER_APPWRITE_PROJECT_ID=${MANAGER_APPWRITE_PROJECT_ID:-contsystem}
-      # AI asistent: Ollama v kontejneru `ollama` na sdílené docker síti `ollama` (port není veřejný)
-      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:3b}
-      # GroqCloud: GROQ_API_KEY přichází jen z .env na serveru (env_file výše) — nikdy do gitu ani do frontendu.
-      # GROQ_MODELS prázdné = automaticky všechny chatovací modely klíče (výchozí gpt-oss-120b); jinak přesný seznam/pořadí.
-      - GROQ_MODELS=${GROQ_MODELS:-}
-      # Google Gemini: GEMINI_API_KEY jen z .env na serveru; GEMINI_MODELS prázdné = gemini-2.5-flash,gemini-flash-latest
-      - GEMINI_MODELS=${GEMINI_MODELS:-}
-      # počítadla limitů GroqCloud / Gemini přežijí restart / redeploy
-      - CHAT_STATE_FILE=/app/state/groq-rate.json
-    volumes:
-      - acc-db-state:/app/state
+    depends_on:
+      postgres:
+        condition: service_healthy
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.acc-db.rule=Host(`zakazky.contsystem.cz`) && PathPrefix(`/acc-db`)"
@@ -44,14 +56,13 @@ services:
       - "traefik.docker.network=appwrite"
     networks:
       - appwrite
-      - ollama
+      - acc-db
 
 volumes:
-  acc-db-state:
+  acc-db-pg:
 
 networks:
   appwrite:
     external: true
-  # `docker network create ollama && docker network connect ollama ollama` (viz README → AI asistent)
-  ollama:
-    external: true
+  acc-db:
+    name: acc-db

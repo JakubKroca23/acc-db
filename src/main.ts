@@ -1,15 +1,6 @@
 import './style.css'
 import type { AccessoryType, CartMap, CatalogUpdateStatus, PriceHistoryEntry, Product, RelatedGroup } from './types'
 import { estimateShippingBySupplier, type ShippingEstimate } from './shipping'
-import { mountChatWidget, type ChatAction } from './chat-widget'
-import {
-  findKitGaps,
-  formatKitTipMessage,
-  loadDismissedKitTips,
-  saveDismissedKitTips,
-  tipForAddedProduct,
-  type KitTipGap,
-} from './kit-tips'
 
 const STORAGE_KEY = 'acc-db-cart-v2'
 const NOTE_KEY = 'acc-db-quote-note'
@@ -33,7 +24,7 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
 /** Logged-in Manager user (when the server-side gate is on). */
 let me: { id?: string; name: string; email: string; labels?: string[] } | null = null
 
-/** Quote, note and chat are stored per Manager user: `<key>:<userId>` (unkeyed only when the auth gate is off). */
+/** Quote and note are stored per Manager user: `<key>:<userId>` (unkeyed only when the auth gate is off). */
 let userId = ''
 const userKey = (base: string) => (userId ? `${base}:${userId}` : base)
 
@@ -69,8 +60,6 @@ async function loadMe() {
     renderHeaderActions()
   } catch {
     /* optional */
-  } finally {
-    startChat()
   }
 }
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -214,88 +203,6 @@ let toastMsg = ''
 let catalogInfoOpen = false
 let catalogDevMenuOpen = false
 let supplierMenuOpen = false
-let dismissedKitTips = loadDismissedKitTips()
-let activeKitTip: KitTipGap | null = null
-let kitTipHideTimer: number | undefined
-
-function cartTypeSlugs(): Set<string> {
-  const slugs = new Set<string>()
-  for (const [id, qty] of Object.entries(cart)) {
-    if (!qty) continue
-    const p = productsById.get(id)
-    if (p?.typeSlug) slugs.add(p.typeSlug)
-  }
-  return slugs
-}
-
-function dismissKitMissing(slugs: string[]) {
-  for (const s of slugs) dismissedKitTips.add(s)
-  saveDismissedKitTips(dismissedKitTips)
-}
-
-function showKitTip(gap: KitTipGap | null) {
-  activeKitTip = gap
-  if (kitTipHideTimer) window.clearTimeout(kitTipHideTimer)
-  kitTipHideTimer = undefined
-  if (gap) {
-    kitTipHideTimer = window.setTimeout(() => {
-      activeKitTip = null
-      renderNotices()
-    }, 14000)
-  }
-  renderNotices()
-}
-
-function maybeTipAfterAdd(product: Product) {
-  const gap = tipForAddedProduct(types, groups, cartTypeSlugs(), product.typeSlug, dismissedKitTips)
-  if (gap) showKitTip(gap)
-}
-
-function kitTipBubbleHtml(): string {
-  if (!activeKitTip) return ''
-  const gap = activeKitTip
-  const openBtns = gap.missing
-    .map(
-      (m) =>
-        `<button type="button" class="btn btn-primary" data-action="kit-tip-open" data-slug="${escapeAttr(m.slug)}">${escapeHtml(m.name)}</button>`,
-    )
-    .join('')
-  return `
-    <aside class="kit-tip-bubble no-print" role="status" aria-label="Tip Kapitána Karla">
-      <div class="kit-tip-head">
-        <span class="kit-tip-name">Kapitán Karel</span>
-        <button type="button" class="kit-tip-close" data-action="kit-tip-dismiss" aria-label="Zavřít tip">✕</button>
-      </div>
-      <p class="kit-tip-msg">${escapeHtml(formatKitTipMessage(gap))}</p>
-      <div class="kit-tip-actions">
-        ${openBtns}
-        <button type="button" class="btn btn-outline" data-action="kit-tip-dismiss">Zavřít</button>
-      </div>
-    </aside>`
-}
-
-function quoteKitTipsHtml(): string {
-  const gaps = findKitGaps(types, groups, cartTypeSlugs(), dismissedKitTips)
-  if (!gaps.length) return ''
-  const items = gaps
-    .flatMap((g) =>
-      g.missing.map(
-        (m) =>
-          `<li>
-            <span>K <strong>${escapeHtml(g.triggerName)}</strong> chybí <strong>${escapeHtml(m.name)}</strong></span>
-            <button type="button" class="btn btn-outline" data-action="kit-tip-open" data-slug="${escapeAttr(m.slug)}">Otevřít</button>
-            <button type="button" class="link-btn" data-action="kit-tip-dismiss-slug" data-slug="${escapeAttr(m.slug)}">Ignorovat</button>
-          </li>`,
-      ),
-    )
-    .join('')
-  return `
-    <aside class="kit-tip-banner no-print" aria-label="Tipy Kapitána Karla k nabídce">
-      <div class="kit-tip-banner-title">Kapitán Karel radí</div>
-      <ul class="kit-tip-banner-list">${items}</ul>
-    </aside>`
-}
-
 function isCatalogDev(): boolean {
   return (me?.labels ?? []).some((label) => label.toLowerCase() === 'dev')
 }
@@ -400,18 +307,9 @@ function supplierFilterParam(): string | null {
   return [...selectedSuppliers].join(',')
 }
 
-function supplierFilterLabel(): string {
-  if (!suppliersFilterReady) return 'všichni'
-  if (selectedSuppliers.size === 0) return 'žádný'
-  if (allCatalogSuppliers.length && allCatalogSuppliers.every((s) => selectedSuppliers.has(s))) {
-    return 'všichni'
-  }
-  return [...selectedSuppliers].sort((a, b) => a.localeCompare(b, 'cs')).join(', ')
-}
-
 let loadSeq = 0
 async function loadProductsForCurrent() {
-  const seq = ++loadSeq // a newer load (e.g. category then supplier filter from Kapitán Karel) wins
+  const seq = ++loadSeq // a newer load (e.g. category then supplier filter) wins
   catalogLoading = true
   catalogError = null
   render()
@@ -519,14 +417,11 @@ function addOne(product: Product) {
   if (!priceKnown(product)) return
   productsById.set(product.id, product)
   setQty(product.id, (cart[product.id] || 0) + 1)
-  maybeTipAfterAdd(product)
-  if (!activeKitTip) {
-    toastMsg = `Přidáno do nabídky: ${product.name.slice(0, 48)}`
-    window.setTimeout(() => {
-      toastMsg = ''
-      render()
-    }, 1800)
-  }
+  toastMsg = `Přidáno do nabídky: ${product.name.slice(0, 48)}`
+  window.setTimeout(() => {
+    toastMsg = ''
+    render()
+  }, 1800)
 }
 
 function clearAll() {
@@ -1511,7 +1406,6 @@ function quotePanelHtml(): string {
         </div>
       </header>
       <p class="quote-disclaimer">Ceny jsou orientační z veřejných katalogů dodavatelů — nejde o závazný ceník. Před předáním zkontrolujte množství a položky.</p>
-      ${quoteKitTipsHtml()}
       <label class="quote-note no-print">
         <span>Poznámka k nabídce</span>
         <textarea data-quote-note rows="2" placeholder="např. zakázka XY, termín, specifikace nástavby…">${escapeHtml(quoteNote)}</textarea>
@@ -1679,7 +1573,7 @@ function renderNotices() {
       </div>`
     : ''
   const toast = toastMsg ? `<div class="toast" role="status">${escapeHtml(toastMsg)}</div>` : ''
-  region('notices').innerHTML = banner + toast + kitTipBubbleHtml()
+  region('notices').innerHTML = banner + toast
 }
 
 const PICK_CHANNEL = 'acc-db-accessory-pick'
@@ -2057,36 +1951,7 @@ app.addEventListener('click', (e) => {
       supplierMenuOpen = true
       void loadProductsForCurrent()
       break
-    case 'kit-tip-dismiss':
-      if (activeKitTip) dismissKitMissing(activeKitTip.missing.map((m) => m.slug))
-      showKitTip(null)
-      if (viewMode === 'quote') renderMain()
-      break
-    case 'kit-tip-dismiss-slug': {
-      const slug = actionEl.dataset.slug
-      if (slug) {
-        dismissKitMissing([slug])
-        if (activeKitTip) {
-          activeKitTip = {
-            ...activeKitTip,
-            missing: activeKitTip.missing.filter((m) => m.slug !== slug),
-          }
-          if (!activeKitTip.missing.length) showKitTip(null)
-          else renderNotices()
-        }
-        if (viewMode === 'quote') renderMain()
-      }
-      break
-    }
-    case 'kit-tip-open': {
-      const slug = actionEl.dataset.slug
-      if (slug) {
-        showKitTip(null)
-        toCatalogView()
-        selectType(slug)
-      }
-      break
-    }
+    
     case 'update-catalog':
       if (!isCatalogDev()) break
       openUpdateConfirm()
@@ -2232,216 +2097,3 @@ document.addEventListener('keydown', (e) => {
 
 render()
 void loadBootstrap()
-// ── AI assistant: compact snapshot of what the user sees (sent with every chat question) ──
-// Kept small on purpose: the VPS CPU evaluates prompts at only ~30 tokens/s.
-const CHAT_CTX_MAX = 4000 // bytes of JSON; the server caps at 8 kB
-
-const bothPrices = (ex: number, vat: number) => `${formatCzkExact(ex)} bez DPH / ${formatCzkExact(vat)} s DPH`
-
-function chatProductLine(p: Product, withCategory: boolean): string {
-  return [
-    p.name.slice(0, 80),
-    p.supplier,
-    ...(p.sku ? [`kód ${p.sku}`] : []),
-    ...(withCategory ? [typeName(p.typeSlug)] : []),
-    `${bothPrices(p.price, p.priceVat)} za ${p.unit}`,
-  ].join(' · ')
-}
-
-/** Products whose cards are (at least partly) on screen; fallback = the top of the list. */
-function visibleProducts(limit: number): Product[] {
-  const ids: string[] = []
-  const vh = window.innerHeight
-  for (const btn of region('main').querySelectorAll<HTMLElement>('.product-card [data-history]')) {
-    const r = btn.closest('.product-card')!.getBoundingClientRect()
-    if (r.bottom > 0 && r.top < vh && r.width > 0) ids.push(btn.dataset.history!)
-    if (ids.length >= limit) break
-  }
-  const list = ids.map((id) => productsById.get(id)).filter((p): p is Product => !!p)
-  return list.length ? list : catalogItems.slice(0, limit)
-}
-
-function chatContext(): Record<string, unknown> {
-  const lines = cartLines()
-  const shipping = shippingForCart(lines)
-  const goodsEx = lines.reduce((a, l) => a + l.lineExVat, 0)
-  const goodsVat = lines.reduce((a, l) => a + l.lineVat, 0)
-  const shipEx = shipping.reduce((a, s) => a + s.shippingExVat, 0)
-  const shipVat = shipping.reduce((a, s) => a + s.shippingVat, 0)
-  const t = currentType()
-  const open = historyOpenId ? productsById.get(historyOpenId) : undefined
-  const history = open ? priceHistoryCache[open.id] : undefined
-
-  const quote = (maxItems: number): Record<string, unknown> | string => {
-    if (!lines.length) return 'prázdná'
-    return {
-      'Počet položek': lines.length,
-      ...(maxItems
-        ? {
-            Položky: [
-              ...lines
-                .slice(0, maxItems)
-                .map((l) => `${l.qty} ${l.product.unit} × ${l.product.name.slice(0, 70)}, ${l.product.supplier}, ${formatCzkExact(l.product.price)}/${l.product.unit} bez DPH, řádek ${bothPrices(l.lineExVat, l.lineVat)}`),
-              ...(lines.length > maxItems ? [`… a dalších ${lines.length - maxItems} položek`] : []),
-            ],
-          }
-        : {}),
-      'Zboží celkem': bothPrices(goodsEx, goodsVat),
-      'Doprava (odhad)': bothPrices(shipEx, shipVat),
-      'Celkem včetně dopravy': bothPrices(goodsEx + shipEx, goodsVat + shipVat),
-      ...(quoteNote.trim() ? { Poznámka: quoteNote.trim().slice(0, 150) } : {}),
-    }
-  }
-
-  const build = (maxProducts: number, maxItems: number): Record<string, unknown> => {
-    const ctx: Record<string, unknown> = {
-      Stránka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : viewMode === 'search' ? 'Katalog – výsledky hledání' : 'Katalog',
-    }
-    if (viewMode !== 'quote') {
-      if (viewMode === 'browse') {
-        ctx.Kategorie = selectedSlug === ALL_SLUG ? 'Vše (celý katalog)' : t ? `${t.name} (skupina ${t.category})` : '—'
-        const related = selectedSlug === ALL_SLUG ? [] : relatedFor(selectedSlug).map((r) => r.name)
-        if (related.length) ctx['Související kategorie'] = related.slice(0, 6).join(', ')
-      }
-      ctx['Filtr dodavatele'] = supplierFilterLabel()
-      ctx['Řazení'] = sortOrder === 'price_desc' ? 'cena ↓' : 'cena ↑'
-      if (searchQ.trim()) ctx['Hledaný text'] = searchQ.trim().slice(0, 80)
-      ctx['Počet produktů v seznamu'] = catalogLoading ? 'načítá se' : catalogItems.length
-      if (open) {
-        ctx['Otevřený detail produktu (Historie cen)'] = [
-          chatProductLine(open, true),
-          ...(open.dimensions ? [`rozměry ${open.dimensions.slice(0, 60)}`] : []),
-          ...(history
-            ? [
-                history.length
-                  ? `změny ceny: ${history.slice(0, 3).map((h) => `${formatHistoryDate(h.recordedAt)} ${formatCzkExact(h.oldPriceVat)} → ${formatCzkExact(h.newPriceVat)} s DPH`).join('; ')}`
-                  : 'cena se zatím neměnila',
-              ]
-            : []),
-        ].join(' · ')
-      }
-      if (maxProducts) {
-        ctx['Produkty na obrazovce'] = visibleProducts(maxProducts).map((p) => chatProductLine(p, viewMode === 'search' || selectedSlug === ALL_SLUG))
-      }
-    }
-    ctx['Cenová nabídka'] = quote(maxItems)
-    return ctx
-  }
-  // shrink until it fits (fewer visible products first, then fewer quote lines)
-  for (const [mp, mi] of [[6, 12], [4, 8], [2, 5], [0, 5], [0, 0]]) {
-    const ctx = build(mp, mi)
-    if (new TextEncoder().encode(JSON.stringify(ctx)).length <= CHAT_CTX_MAX) return ctx
-  }
-  return { Stránka: viewMode === 'quote' ? 'Cenová nabídka (#/nabidka)' : 'Katalog' }
-}
-
-// ── Kapitán Karel actions: tool calls the server validated, applied to this browser's state ──
-function chatQuote() {
-  return Object.entries(cart)
-    .filter(([, q]) => q > 0)
-    .map(([id, qty]) => ({ id, qty }))
-}
-
-/** leave the quote page without touching history (the chat drives navigation) */
-function toCatalogView() {
-  if (viewMode === 'quote') {
-    quotePushed = false
-    history.replaceState(null, '', catalogUrl())
-  }
-}
-
-async function focusProduct(p: Product) {
-  productsById.set(p.id, p)
-  toCatalogView()
-  selectedSlug = p.typeSlug
-  viewMode = 'browse'
-  searchQ = ''
-  searchEl.value = ''
-  // Ensure the product's supplier is visible (keep other toggles).
-  if (p.supplier) selectedSuppliers.add(p.supplier)
-  else selectAllSuppliers()
-  history.replaceState(null, '', `#/${p.typeSlug}`)
-  await loadProductsForCurrent()
-  const idx = catalogItems.findIndex((x) => x.id === p.id)
-  if (idx >= renderLimit) renderLimit = idx + 1
-  historyOpenId = null
-  void togglePriceHistory(p.id) // opens „Historie cen“ (renders)
-  const card = app.querySelector(`[data-history="${CSS.escape(p.id)}"]`)?.closest<HTMLElement>('.product-card')
-  if (card) {
-    card.scrollIntoView({ block: 'center' })
-    card.classList.add('is-flash')
-    window.setTimeout(() => card.classList.remove('is-flash'), 2400)
-  }
-}
-
-function applyChatAction(a: ChatAction): { undo?: () => void } | void {
-  const args = a.args || {}
-  const product = (): Product | undefined => {
-    const id = String(args.id || '')
-    if (a.product && a.product.id === id) productsById.set(id, a.product as unknown as Product)
-    return productsById.get(id)
-  }
-  switch (a.name) {
-    case 'otevrit_kategorii': {
-      const slug = String(args.slug || '')
-      toCatalogView()
-      if (slug === ALL_SLUG || types.some((t) => t.slug === slug)) selectType(slug)
-      return
-    }
-    case 'nastavit_filtr_dodavatele': {
-      toCatalogView()
-      const raw = String(args.dodavatel || '').trim()
-      if (!raw || raw.toLocaleLowerCase('cs').startsWith('vsich')) {
-        selectAllSuppliers()
-      } else {
-        selectedSuppliers = new Set([raw])
-        if (!allCatalogSuppliers.includes(raw)) {
-          allCatalogSuppliers = [...allCatalogSuppliers, raw].sort((a, b) => a.localeCompare(b, 'cs'))
-          knownSupplierSnapshot.add(raw)
-        }
-        suppliersFilterReady = true
-      }
-      viewMode = searchQ.trim() ? 'search' : 'browse'
-      if (viewMode === 'browse' && !selectedSlug) selectedSlug = ALL_SLUG
-      void loadProductsForCurrent()
-      return
-    }
-    case 'hledat_v_katalogu': {
-      toCatalogView()
-      searchQ = String(args.text || '').slice(0, 80)
-      searchEl.value = searchQ
-      viewMode = 'search'
-      selectedSlug = null
-      window.scrollTo({ top: 0 })
-      void loadProductsForCurrent()
-      return
-    }
-    case 'otevrit_detail_produktu': {
-      const p = product()
-      if (p) void focusProduct(p)
-      return
-    }
-    case 'pridat_do_nabidky':
-    case 'zmenit_mnozstvi_v_nabidce':
-    case 'odebrat_z_nabidky': {
-      const p = product()
-      if (!p) return
-      const prev = cart[p.id] || 0
-      const next = Number(args.mnozstvi) || 0
-      setQty(p.id, next)
-      if (a.name === 'pridat_do_nabidky' || (next > 0 && prev === 0)) maybeTipAfterAdd(p)
-      return { undo: () => setQty(p.id, prev) }
-    }
-    case 'otevrit_nabidku':
-      openQuoteView()
-      return
-  }
-}
-
-// the chat starts once the user is known (its history is stored per user)
-let chatStarted = false
-function startChat() {
-  if (pickMode || chatStarted) return
-  chatStarted = true
-  mountChatWidget(apiFetch, { getContext: chatContext, getQuote: chatQuote, applyAction: applyChatAction, userId })
-}
