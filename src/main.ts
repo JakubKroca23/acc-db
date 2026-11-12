@@ -147,13 +147,15 @@ function slugFromHash(): string | null {
 
 // The quote („Cenová nabídka“) is a full-page view at #/nabidka (deep-linkable, browser Back returns to the catalog).
 const QUOTE_HASH = 'nabidka'
+/** Catalog update console — full page at #/aktualizace; job keeps running in the background. */
+const UPDATE_HASH = 'aktualizace'
 
 const pageParams = new URLSearchParams(location.search)
 /** Opened from the order accessory row: pick one product and post it back. */
 const pickMode = pageParams.get('pick') === '1'
 const pickToken = pageParams.get('token') || ''
 
-let selectedSlug: string | null = slugFromHash() === QUOTE_HASH ? null : slugFromHash()
+let selectedSlug: string | null = slugFromHash() === QUOTE_HASH || slugFromHash() === UPDATE_HASH ? null : slugFromHash()
 let renderLimit = PAGE_SIZE
 let searchQ = ''
 /** Active supplier badges; empty Set = no products. Filled on first catalog load. */
@@ -161,7 +163,7 @@ let selectedSuppliers = new Set<string>()
 let suppliersFilterReady = false
 let knownSupplierSnapshot = new Set<string>()
 let sortOrder: 'price_asc' | 'price_desc' = 'price_asc'
-let viewMode: 'browse' | 'search' | 'quote' = slugFromHash() === QUOTE_HASH ? 'quote' : 'browse'
+let viewMode: 'browse' | 'search' | 'quote' | 'update' = slugFromHash() === QUOTE_HASH ? 'quote' : slugFromHash() === UPDATE_HASH ? 'update' : 'browse'
 /** Pick-mode URL may preselect one supplier until the first supplier list arrives. */
 let pendingPickSupplier = ''
 
@@ -192,10 +194,8 @@ let catalogError: string | null = null
 let searchTimer: number | undefined
 
 let updateStatus: CatalogUpdateStatus | null = null
-/** Dev-only overlay while scrape+seed runs. */
-let updateModalOpen = false
-/** Modal open before POST — user picks suppliers / cancel. */
-let updateAwaitingConfirm = false
+/** On update page: show supplier form (true) or live console (false). */
+let updateAwaitingConfirm = true
 const UPDATE_SUPPLIER_OPTIONS = ['ALSAP', 'Trans-Technik', 'Hydrotruck', 'Pavlínek', 'Olejspol', 'Hydrolider'] as const
 let updateSelectedSuppliers: string[] = [...UPDATE_SUPPLIER_OPTIONS]
 let updatePolling: number | undefined
@@ -237,7 +237,6 @@ async function loadBootstrap() {
       stats = (await statsRes.json()) as DbStats
       updateStatus = (stats as DbStats & { catalogUpdate?: CatalogUpdateStatus }).catalogUpdate || null
       if (updateStatus?.state === 'running') {
-        updateModalOpen = true
         startUpdatePolling()
       }
     }
@@ -619,8 +618,8 @@ function printQuote() {
   void Promise.race([Promise.all(ready), new Promise((r) => window.setTimeout(r, 2500))]).then(() => window.print())
 }
 
-// ── catalog update ────────────────────────────────────────────────
-function updatePhaseMeta(phase: string, state: CatalogUpdateStatus['state']): {
+// ── catalog update (#/aktualizace page; job runs in background) ──
+function updatePhaseMeta(phase: string, state: CatalogUpdateStatus['state'], logs: string[] = []): {
   step: number
   label: string
   pct: number
@@ -630,7 +629,19 @@ function updatePhaseMeta(phase: string, state: CatalogUpdateStatus['state']): {
   if (p.includes('stopped') || (state === 'error' && p.includes('stop')))
     return { step: p.includes('seed') ? 2 : 1, label: 'Zastaveno', pct: p.includes('seed') ? 72 : 35 }
   if (state === 'error') return { step: p.includes('seed') ? 2 : 1, label: 'Chyba', pct: p.includes('seed') ? 72 : 35 }
-  if (p.includes('seed')) return { step: 2, label: 'Ukládám do databáze', pct: 72 }
+  if (p.includes('seed')) {
+    let pct = 72
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const m = logs[i].match(/products progress\s+(\d+)\/(\d+)/i)
+      if (m) {
+        const cur = Number(m[1])
+        const tot = Number(m[2]) || 1
+        pct = 72 + Math.round((cur / tot) * 26)
+        break
+      }
+    }
+    return { step: 2, label: 'Ukládám do PostgreSQL', pct: Math.min(98, pct) }
+  }
   if (p.includes('scrape')) return { step: 1, label: 'Stahuji katalogy dodavatelů', pct: 38 }
   if (p.includes('start')) return { step: 0, label: 'Připravuji aktualizaci', pct: 8 }
   return { step: 0, label: phase || 'Běží…', pct: 15 }
@@ -645,9 +656,14 @@ function updateElapsed(startedAt: string | null, finishedAt: string | null): str
   return m > 0 ? `${m}:${String(s).padStart(2, '0')}` : `${s} s`
 }
 
-function updateModalHtml(): string {
-  if (!updateModalOpen) return ''
-  if (updateAwaitingConfirm) {
+function updateIsRunning(): boolean {
+  return updateStatus?.state === 'running'
+}
+
+function updatePageHtml(): string {
+  const running = updateIsRunning()
+  const showForm = updateAwaitingConfirm && !running
+  if (showForm) {
     const boxes = UPDATE_SUPPLIER_OPTIONS.map((name) => {
       const checked = updateSelectedSuppliers.includes(name)
       const hint =
@@ -659,43 +675,36 @@ function updateModalHtml(): string {
       </label>`
     }).join('')
     return `
-    <div class="upd-modal-root" role="dialog" aria-modal="true" aria-labelledby="upd-modal-title" data-update-modal>
-      <div class="upd-modal-backdrop" data-action="close-update-modal"></div>
-      <div class="upd-modal">
-        <header class="upd-modal-head">
-          <div class="upd-modal-brand">
-            <span class="upd-modal-icon run" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            </span>
-            <div>
-              <h2 id="upd-modal-title">Aktualizovat katalog</h2>
-              <p class="upd-modal-sub">Vyberte dodavatele ke scrapu. Nezaškrtnutí zůstanou z poslední aktualizace.</p>
-            </div>
-          </div>
-          <button type="button" class="upd-modal-close" data-action="close-update-modal" aria-label="Zavřít">×</button>
-        </header>
-        <div class="upd-supplier-list" role="group" aria-label="Dodavatelé">
-          ${boxes}
+    <div class="upd-page">
+      <div class="content-head">
+        <div>
+          <h1>Aktualizovat katalog</h1>
+          <p class="lead">Vyberte dodavatele ke scrapu. Nezaškrtnutí zůstanou z poslední aktualizace. Job běží na pozadí — můžete se vrátit do katalogu.</p>
         </div>
+        <button type="button" class="btn btn-outline" data-action="back-to-catalog">Zpět do katalogu</button>
+      </div>
+      <div class="upd-panel">
+        <div class="upd-supplier-list" role="group" aria-label="Dodavatelé">${boxes}</div>
         <div class="upd-quick-row">
           <button type="button" class="link-btn" data-action="update-suppliers-all">Všichni</button>
           <button type="button" class="link-btn" data-action="update-suppliers-pavlinek">Jen Pavlínek</button>
           <button type="button" class="link-btn" data-action="update-suppliers-no-pav">Bez Pavlínek</button>
         </div>
-        <footer class="upd-modal-foot">
-          <button type="button" class="btn btn-ghost" data-action="close-update-modal">Zrušit</button>
+        <div class="upd-actions">
           <button type="button" class="btn btn-primary" data-action="confirm-update-catalog">Spustit aktualizaci</button>
-        </footer>
+        </div>
       </div>
     </div>`
   }
+
   const st = updateStatus
-  const state = st?.state || 'running'
+  const state = st?.state || (running ? 'running' : 'idle')
   const phase = st?.phase || 'starting'
   const stopped = phase === 'stopped' || (st?.error || '').includes('Zastaveno')
-  const meta = updatePhaseMeta(phase, state === 'idle' ? 'running' : state)
+  const logs = st?.logs || []
+  const meta = updatePhaseMeta(phase, state === 'idle' ? 'running' : state, logs)
   const elapsed = updateElapsed(st?.startedAt || null, st?.finishedAt || null)
-  const logs = (st?.logs || []).slice(-40)
+  const logTail = logs.slice(-80)
   const bySup = st?.counts?.bySupplier || {}
   const supplierChips = Object.entries(bySup)
     .sort((a, b) => b[1] - a[1])
@@ -711,8 +720,6 @@ function updateModalHtml(): string {
     { id: 2, title: 'Seed' },
     { id: 3, title: 'Hotovo' },
   ]
-  const canClose = state === 'ok' || state === 'error'
-  const running = state === 'running'
   const title =
     state === 'ok'
       ? 'Katalog je aktuální'
@@ -723,42 +730,27 @@ function updateModalHtml(): string {
           : 'Aktualizace katalogu'
   const subtitle =
     state === 'ok'
-      ? 'Scrape i zápis do Appwrite doběhly úspěšně.'
+      ? 'Scrape i zápis do PostgreSQL doběhly úspěšně.'
       : stopped
-        ? 'Proces byl ukončen. Částečný scrape mohl zůstat v souboru — znovu spusťte, nebo přeskočte Pavlínek.'
+        ? 'Proces byl ukončen. Částečný scrape mohl zůstat v souboru — spusťte znovu, nebo vynechte problematického dodavatele.'
         : state === 'error'
-          ? st?.error || 'Došlo k chybě — detaily v logu níže.'
-          : 'Stahuji veřejné katalogy a synchronizuji Appwrite. Pavlínek běží pomalu kvůli limitům Shopify.'
+          ? st?.error || 'Došlo k chybě — detaily v konzoli níže.'
+          : 'Stahuji veřejné katalogy a synchronizuji PostgreSQL. Můžete mezitím hledat v katalogu — tahle stránka jen zobrazuje průběh.'
 
   return `
-    <div class="upd-modal-root" role="dialog" aria-modal="true" aria-labelledby="upd-modal-title" data-update-modal>
-      <div class="upd-modal-backdrop"${canClose ? ' data-action="close-update-modal"' : ''}></div>
-      <div class="upd-modal">
-        <header class="upd-modal-head">
-          <div class="upd-modal-brand">
-            <span class="upd-modal-icon ${state === 'ok' ? 'ok' : state === 'error' ? 'err' : 'run'}" aria-hidden="true">
-              ${
-                state === 'ok'
-                  ? '<svg viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-                  : state === 'error'
-                    ? '<svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5h.01M12 3l9.5 16.5H2.5L12 3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-                    : '<svg viewBox="0 0 24 24" class="upd-spin"><path d="M12 3a9 9 0 1 0 9 9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>'
-              }
-            </span>
-            <div>
-              <h2 id="upd-modal-title">${escapeHtml(title)}</h2>
-              <p class="upd-modal-sub">${escapeHtml(subtitle)}</p>
-            </div>
-          </div>
-          ${
-            canClose
-              ? `<button type="button" class="upd-modal-close" data-action="close-update-modal" aria-label="Zavřít">×</button>`
-              : elapsed
-                ? `<span class="upd-elapsed" title="Uplynulý čas">${escapeHtml(elapsed)}</span>`
-                : ''
-          }
-        </header>
+    <div class="upd-page">
+      <div class="content-head">
+        <div>
+          <h1>${escapeHtml(title)}</h1>
+          <p class="lead">${escapeHtml(subtitle)}</p>
+        </div>
+        <div class="upd-head-actions">
+          ${elapsed ? `<span class="upd-elapsed" title="Uplynulý čas">${escapeHtml(elapsed)}</span>` : ''}
+          <button type="button" class="btn btn-outline" data-action="back-to-catalog">Zpět do katalogu</button>
+        </div>
+      </div>
 
+      <div class="upd-panel">
         <ol class="upd-steps" aria-label="Fáze aktualizace">
           ${steps
             .map((s) => {
@@ -791,33 +783,23 @@ function updateModalHtml(): string {
         }
 
         <div class="upd-log-wrap">
-          <div class="upd-log-head">Průběh</div>
+          <div class="upd-log-head">Konzole</div>
           <pre class="upd-log" data-update-log>${
-            logs.length
-              ? logs.map((l) => escapeHtml(l)).join('\n')
-              : 'Čekám na první výstup ze serveru…'
+            logTail.length ? logTail.map((l) => escapeHtml(l)).join('\n') : 'Čekám na první výstup ze serveru…'
           }</pre>
         </div>
 
-        <footer class="upd-modal-foot">
+        <div class="upd-actions">
           ${
-            running
-              ? `<span class="upd-foot-hint">Aktualizace běží na serveru.</span>
+            state === 'running'
+              ? `<span class="upd-foot-hint">Běží na pozadí — katalog můžete dál procházet.</span>
                  <button type="button" class="btn btn-danger" data-action="stop-update-catalog">Zastavit</button>`
-              : canClose
-                ? `<button type="button" class="btn btn-primary" data-action="close-update-modal">${state === 'ok' ? 'Hotovo' : 'Zavřít'}</button>`
-                : ''
+              : `<button type="button" class="btn btn-outline" data-action="update-catalog-again">Nová aktualizace</button>
+                 <button type="button" class="btn btn-primary" data-action="back-to-catalog">${state === 'ok' ? 'Hotovo' : 'Zpět do katalogu'}</button>`
           }
-        </footer>
+        </div>
       </div>
     </div>`
-}
-
-function renderUpdateModal() {
-  const el = region('update-modal')
-  el.innerHTML = updateModalHtml()
-  const log = el.querySelector<HTMLElement>('[data-update-log]')
-  if (log) log.scrollTop = log.scrollHeight
 }
 
 function loadSavedUpdateSuppliers(): string[] {
@@ -838,11 +820,30 @@ function readUpdateSupplierChecks(): string[] {
   return boxes.filter((b) => b.checked).map((b) => b.dataset.updateSupplier || '').filter(Boolean)
 }
 
-function openUpdateConfirm() {
-  updateModalOpen = true
-  updateAwaitingConfirm = true
-  updateSelectedSuppliers = loadSavedUpdateSuppliers()
-  renderUpdateModal()
+function openUpdateView(push = true) {
+  if (viewMode !== 'update' && viewMode !== 'quote') catalogScrollY = window.scrollY
+  viewMode = 'update'
+  if (!updateIsRunning()) {
+    updateAwaitingConfirm = true
+    updateSelectedSuppliers = loadSavedUpdateSuppliers()
+  } else {
+    updateAwaitingConfirm = false
+  }
+  if (push && slugFromHash() !== UPDATE_HASH) {
+    history.pushState(null, '', `#/${UPDATE_HASH}`)
+  }
+  render()
+  window.scrollTo({ top: 0 })
+  const log = region('main').querySelector<HTMLElement>('[data-update-log]')
+  if (log) log.scrollTop = log.scrollHeight
+}
+
+function leaveUpdate() {
+  viewMode = searchQ.trim() ? 'search' : 'browse'
+  if (viewMode === 'browse' && !selectedSlug) selectedSlug = ALL_SLUG
+  render()
+  if (!catalogItems.length && !catalogLoading) void loadProductsForCurrent()
+  window.scrollTo({ top: catalogScrollY })
 }
 
 async function updateAuthHeaders(): Promise<Record<string, string> | null> {
@@ -863,7 +864,6 @@ async function updateAuthHeaders(): Promise<Record<string, string> | null> {
 
 async function triggerUpdate() {
   updateAwaitingConfirm = false
-  updateModalOpen = true
   updateStatus = {
     state: 'running',
     phase: 'starting',
@@ -874,12 +874,18 @@ async function triggerUpdate() {
     counts: null,
     seed: null,
   }
-  render()
+  if (viewMode !== 'update') openUpdateView()
+  else render()
   try {
     if (!updateSelectedSuppliers.length) throw new Error('Vyberte alespoň jednoho dodavatele')
+    try {
+      localStorage.setItem('acc-db-update-suppliers', JSON.stringify(updateSelectedSuppliers))
+    } catch {
+      /* ignore */
+    }
     const headers = await updateAuthHeaders()
     if (!headers) {
-      updateModalOpen = false
+      updateAwaitingConfirm = true
       updateStatus = null
       render()
       return
@@ -936,13 +942,19 @@ function startUpdatePolling() {
       const res = await apiFetch(`/catalog/update/status`)
       if (!res.ok) return
       updateStatus = (await res.json()) as CatalogUpdateStatus
-      updateModalOpen = true
-      render()
+      // Keep browsing the catalog; only refresh the update page + header badge.
+      renderHeaderActions()
+      if (viewMode === 'update') {
+        renderMain()
+        const log = region('main').querySelector<HTMLElement>('[data-update-log]')
+        if (log) log.scrollTop = log.scrollHeight
+      }
       if (updateStatus.state === 'ok' || updateStatus.state === 'error') {
         window.clearInterval(updatePolling)
         if (updateStatus.state === 'ok') {
           await loadBootstrap()
-          render()
+          if (viewMode === 'update') render()
+          else renderHeaderActions()
         }
       }
     } catch {
@@ -1425,14 +1437,13 @@ function quotePanelHtml(): string {
 }
 
 function updateStatusHtml(): string {
-  // Compact strip only when modal is closed but a finished status remains.
-  if (updateModalOpen || !updateStatus || updateStatus.state === 'idle' || updateStatus.state === 'running') return ''
+  if (!updateStatus || updateStatus.state === 'idle' || updateStatus.state === 'running') return ''
   return `
     <div class="update-status state-${escapeAttr(updateStatus.state)}">
       <strong>Poslední aktualizace:</strong> ${escapeHtml(updateStatus.phase)}
       ${updateStatus.error ? ` — ${escapeHtml(updateStatus.error)}` : ''}
       ${updateStatus.counts ? ` · ${updateStatus.counts.total} produktů` : ''}
-      <button type="button" class="link-btn" data-action="open-update-modal" style="margin-left:8px">Zobrazit detail</button>
+      <button type="button" class="link-btn" data-action="update-catalog" style="margin-left:8px">Zobrazit detail</button>
     </div>`
 }
 
@@ -1475,7 +1486,6 @@ app.innerHTML = `
         <main class="content" data-region="main"></main>
       </div>
     </div>
-    <div data-region="update-modal"></div>
   </div>
 `
 
@@ -1535,8 +1545,15 @@ function renderHeaderActions() {
         }
       </div>`
     : ''
+  const updateChip = updateIsRunning()
+    ? `<button type="button" class="upd-running-chip ${viewMode === 'update' ? 'active' : ''}" data-action="update-catalog" title="Aktualizace katalogu běží — otevřít konzoli" aria-current="${viewMode === 'update' ? 'page' : 'false'}">
+        <span class="upd-running-dot" aria-hidden="true"></span>
+        Aktualizace…
+      </button>`
+    : ''
   region('header-actions').innerHTML = `
     ${devActions}
+    ${updateChip}
     <button type="button" class="quote-btn ${viewMode === 'quote' ? 'active' : ''}" data-action="open-quote" title="${escapeAttr(title)}" aria-label="${escapeAttr(title)}" ${viewMode === 'quote' ? 'aria-current="page"' : ''}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v12a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z M14 3v5h5 M9 13h6 M9 17h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="quote-btn-label">Cenová nabídka</span>
@@ -1673,9 +1690,15 @@ function cancelPick() {
 function renderMain() {
   const t = currentType()
   const main = region('main')
-  main.classList.toggle('quote-view', viewMode === 'quote')
+  main.classList.toggle('quote-view', viewMode === 'quote' || viewMode === 'update')
   if (viewMode === 'quote') {
     main.innerHTML = quotePanelHtml()
+    return
+  }
+  if (viewMode === 'update') {
+    main.innerHTML = updatePageHtml()
+    const log = main.querySelector<HTMLElement>('[data-update-log]')
+    if (log) log.scrollTop = log.scrollHeight
     return
   }
   const isAll = viewMode === 'browse' && selectedSlug === ALL_SLUG
@@ -1773,7 +1796,6 @@ function render() {
   renderNav()
   renderNotices()
   renderMain()
-  renderUpdateModal()
   if (searchEl.value !== searchQ && document.activeElement !== searchEl) searchEl.value = searchQ
 }
 
@@ -1817,7 +1839,7 @@ function catalogUrl(): string {
 }
 
 function openQuoteView(push = true) {
-  if (viewMode !== 'quote') catalogScrollY = window.scrollY
+  if (viewMode !== 'quote' && viewMode !== 'update') catalogScrollY = window.scrollY
   viewMode = 'quote'
   if (push && slugFromHash() !== QUOTE_HASH) {
     history.pushState(null, '', `#/${QUOTE_HASH}`)
@@ -1913,7 +1935,12 @@ app.addEventListener('click', (e) => {
       openQuoteView()
       break
     case 'back-to-catalog':
-      backToCatalog()
+      if (viewMode === 'update') {
+        history.replaceState(null, '', catalogUrl())
+        leaveUpdate()
+      } else {
+        backToCatalog()
+      }
       break
     case 'clear':
       if (window.confirm('Opravdu vymazat celou nabídku?')) clearAll()
@@ -1953,8 +1980,15 @@ app.addEventListener('click', (e) => {
       break
     
     case 'update-catalog':
+      if (!isCatalogDev() && !updateIsRunning()) break
+      catalogDevMenuOpen = false
+      openUpdateView()
+      break
+    case 'update-catalog-again':
       if (!isCatalogDev()) break
-      openUpdateConfirm()
+      updateAwaitingConfirm = true
+      updateSelectedSuppliers = loadSavedUpdateSuppliers()
+      renderMain()
       break
     case 'confirm-update-catalog':
       if (!isCatalogDev()) break
@@ -1969,31 +2003,19 @@ app.addEventListener('click', (e) => {
       break
     case 'update-suppliers-all':
       updateSelectedSuppliers = [...UPDATE_SUPPLIER_OPTIONS]
-      renderUpdateModal()
+      renderMain()
       break
     case 'update-suppliers-pavlinek':
       updateSelectedSuppliers = ['Pavlínek']
-      renderUpdateModal()
+      renderMain()
       break
     case 'update-suppliers-no-pav':
       updateSelectedSuppliers = UPDATE_SUPPLIER_OPTIONS.filter((s) => s !== 'Pavlínek')
-      renderUpdateModal()
+      renderMain()
       break
     case 'stop-update-catalog':
       if (!isCatalogDev()) break
       void stopUpdate()
-      break
-    case 'close-update-modal':
-      updateModalOpen = false
-      updateAwaitingConfirm = false
-      renderUpdateModal()
-      break
-    case 'open-update-modal':
-      if (updateStatus && updateStatus.state !== 'idle') {
-        updateModalOpen = true
-        updateAwaitingConfirm = false
-        renderUpdateModal()
-      }
       break
     case 'toggle-catalog-dev-menu':
       if (!isCatalogDev()) break
@@ -2046,10 +2068,13 @@ searchEl.addEventListener('input', () => {
   searchQ = searchEl.value
   window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => {
-    // typing a search from the quote view leaves the quote (keep the URL in sync)
+    // typing a search from quote/update leaves that page (job keeps running in background)
     if (viewMode === 'quote') {
       history.replaceState(null, '', catalogUrl())
       quotePushed = false
+    }
+    if (viewMode === 'update') {
+      history.replaceState(null, '', catalogUrl())
     }
     if (searchQ.trim()) {
       viewMode = 'search'
@@ -2065,10 +2090,17 @@ searchEl.addEventListener('input', () => {
 window.addEventListener('hashchange', () => {
   const hashSlug = slugFromHash()
   if (hashSlug === QUOTE_HASH) {
+    if (viewMode === 'update') leaveUpdate()
     if (viewMode !== 'quote') openQuoteView(false)
     return
   }
+  if (hashSlug === UPDATE_HASH) {
+    if (viewMode === 'quote') leaveQuote()
+    if (viewMode !== 'update') openUpdateView(false)
+    return
+  }
   if (viewMode === 'quote') leaveQuote()
+  if (viewMode === 'update') leaveUpdate()
   const slug = hashSlug || ALL_SLUG
   if (slug !== selectedSlug && (slug === ALL_SLUG || types.some((t) => t.slug === slug))) selectType(slug)
 })

@@ -41,7 +41,7 @@ function resolveSuppliers(opts: CatalogUpdateOptions): string[] {
   return [...ALL_SUPPLIERS]
 }
 
-const MAX_LOGS = 200
+const MAX_LOGS = 500
 
 let status: CatalogUpdateStatus = loadStatus()
 let running = false
@@ -214,6 +214,12 @@ export function startCatalogUpdate(
       saveStatus()
 
       if (stopRequested) throw new Error('Zastaveno uživatelem')
+
+      if (!(process.env.DATABASE_URL || '').trim()) {
+        throw new Error('Chybí DATABASE_URL — seed do PostgreSQL nejde spustit (zkontrolujte .env na serveru)')
+      }
+      pushLog('Scrape hotov — spouštím seed do PostgreSQL…')
+      saveStatus()
 
       const seedCode = await runCmd('node', ['scripts/seed.mjs'], 'seed')
       if (stopRequested || seedCode === 130) throw new Error('Zastaveno uživatelem')
