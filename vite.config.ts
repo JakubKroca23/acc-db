@@ -7,7 +7,7 @@ function apiPlugin(env: Record<string, string>): Plugin {
   const gate = createAuthGate(env)
   const handler = createApiHandler(env, gate)
   if (gate.enabled) {
-    console.log(`[acc-db auth] gate ON — Manager session cookie ${gate.config.cookieName} @ ${gate.config.endpoint} (project ${gate.config.projectId}), roles: ${gate.config.allowedRoles.join(', ')}`)
+    console.log(`[acc-db auth] gate ON — Manager session via ${gate.config.authUrl}/api/auth/session, roles: ${gate.config.allowedRoles.join(', ')}`)
   } else {
     console.log('[acc-db auth] gate OFF (set ACC_DB_AUTH=manager to require the Manager login)')
   }

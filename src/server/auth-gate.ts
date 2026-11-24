@@ -1,19 +1,20 @@
 /**
  * Access gate: acc-db is reachable only for users logged in to Contsystem Manager (cs-zakazky)
- * who carry one of the allowed roles (Appwrite user labels, e.g. `dev`).
+ * who carry one of the allowed roles (user labels, e.g. `dev`).
  *
- * The Manager stores its Appwrite session secret in the httpOnly cookie `a_session_<projectId>`
- * (path=/, host-only on zakazky.contsystem.cz), so the browser sends it to /acc-db/ as well.
- * We validate it exactly like the Manager's own middleware does: GET <endpoint>/account with
- * X-Appwrite-Project + X-Appwrite-Session. The returned user carries `labels` (= roles).
- * No API key is needed. Results are cached per sha256(secret) for a short time.
+ * The Manager stores its Better Auth session in the httpOnly cookie
+ * `better-auth.session_token` (http) or `__Secure-better-auth.session_token` (https),
+ * path=/, host-only on zakazky.contsystem.cz, so the browser sends it to /acc-db/ as well.
+ * We validate it the same way the Manager does: GET <MANAGER_AUTH_URL>/api/auth/session
+ * with that cookie. The route returns the user including `labels` (= roles).
+ * A leftover Appwrite cookie `a_session_*` is ignored — that API is gone (HTTP 404) and
+ * treating the 404 as a hard failure showed „Dočasně nedostupné“ to logged-in users.
+ * Results are cached per sha256(cookie) for a short time.
  *
  * Env:
  *   ACC_DB_AUTH=manager                 enable the gate (anything else = disabled, e.g. local dev)
- *   ACC_DB_ALLOWED_ROLES=dev            comma separated Appwrite labels allowed in
- *   MANAGER_APPWRITE_ENDPOINT           default https://appwrite.propoj.app/v1
- *   MANAGER_APPWRITE_PROJECT_ID         default contsystem
- *   MANAGER_SESSION_COOKIE              default a_session_<projectId>
+ *   ACC_DB_ALLOWED_ROLES=dev            comma separated labels allowed in (`*` = any logged-in user)
+ *   MANAGER_AUTH_URL                    default http://cs-zakazky-app:3000 (docker DNS on network appwrite)
  *   MANAGER_LOGIN_URL                   default /login?next=%2Facc-db%2F
  *   MANAGER_URL                         default /  (link back to the Manager)
  */
@@ -28,11 +29,12 @@ const OK_TTL_MS = 60_000
 const DENY_TTL_MS = 10_000
 const FETCH_TIMEOUT_MS = 6_000
 
+/** Same names as cs-zakazky `getSessionCookieHeader()` — do not take them from MANAGER_SESSION_COOKIE (that was the Appwrite cookie). */
+const SESSION_COOKIE_NAMES = ['better-auth.session_token', '__Secure-better-auth.session_token'] as const
+
 export function createAuthGate(env: Record<string, string | undefined>) {
   const enabled = (env.ACC_DB_AUTH || '').trim().toLowerCase() === 'manager'
-  const endpoint = (env.MANAGER_APPWRITE_ENDPOINT || 'https://appwrite.propoj.app/v1').trim().replace(/\/$/, '')
-  const projectId = (env.MANAGER_APPWRITE_PROJECT_ID || 'contsystem').trim()
-  const cookieName = (env.MANAGER_SESSION_COOKIE || `a_session_${projectId}`).trim()
+  const authUrl = (env.MANAGER_AUTH_URL || 'http://cs-zakazky-app:3000').trim().replace(/\/$/, '')
   const loginUrl = (env.MANAGER_LOGIN_URL || '/login?next=%2Facc-db%2F').trim()
   const managerUrl = (env.MANAGER_URL || '/').trim()
   const allowedRoles = (env.ACC_DB_ALLOWED_ROLES || '*')
@@ -43,59 +45,75 @@ export function createAuthGate(env: Record<string, string | undefined>) {
   const cache = new Map<string, CacheEntry>()
   const inflight = new Map<string, Promise<GateUser | null>>()
 
-  function readCookie(req: IncomingMessage, name: string): string | null {
+  /** Raw Cookie header pair(s) for the Better Auth session, or null when the browser did not send one. */
+  function sessionCookieHeader(req: IncomingMessage): string | null {
     const header = req.headers.cookie
     if (!header) return null
+    const found = new Map<string, string>()
     for (const part of header.split(';')) {
       const i = part.indexOf('=')
       if (i < 0) continue
-      if (part.slice(0, i).trim() !== name) continue
-      const v = part.slice(i + 1).trim()
-      try {
-        return decodeURIComponent(v) || null
-      } catch {
-        return v || null
-      }
+      const name = part.slice(0, i).trim()
+      if (!SESSION_COOKIE_NAMES.includes(name as (typeof SESSION_COOKIE_NAMES)[number])) continue
+      const raw = part.slice(i + 1).trim()
+      if (!raw) continue
+      found.set(name, raw)
     }
-    return null
+    const pairs: string[] = []
+    for (const name of SESSION_COOKIE_NAMES) {
+      const raw = found.get(name)
+      if (raw) pairs.push(`${name}=${raw}`)
+    }
+    return pairs.length ? pairs.join('; ') : null
   }
 
-  /** null = invalid / expired session; throws when the Manager's Appwrite is unreachable (fail closed, not cached). */
-  async function fetchUser(secret: string): Promise<GateUser | null> {
+  /** null = invalid / expired session; throws when the Manager is unreachable (fail closed, not cached). */
+  async function fetchUser(cookieHeader: string): Promise<GateUser | null> {
     const ctrl = new AbortController()
     const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS)
     try {
-      const res = await fetch(`${endpoint}/account`, {
+      const res = await fetch(`${authUrl}/api/auth/session`, {
         headers: {
-          'X-Appwrite-Project': projectId,
-          'X-Appwrite-Session': secret,
-          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Cookie: cookieHeader,
         },
+        redirect: 'manual',
         signal: ctrl.signal,
       })
-      if (res.status === 401 || res.status === 403) return null
-      if (!res.ok) throw new Error(`Appwrite /account HTTP ${res.status}`)
-      const u = (await res.json()) as { $id?: string; name?: string; email?: string; labels?: unknown; status?: boolean }
-      if (!u.$id || u.status === false) return null
+      if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+        await res.body?.cancel()
+        return null
+      }
+      if (!res.ok) {
+        await res.body?.cancel()
+        throw new Error(`Manager /api/auth/session HTTP ${res.status}`)
+      }
+      const body = (await res.json()) as {
+        success?: boolean
+        user?: { $id?: string; id?: string; name?: string; email?: string; labels?: unknown }
+      }
+      const u = body.user
+      const id = (u?.$id || u?.id || '').trim()
+      if (!body.success || !id) return null
       return {
-        id: u.$id,
-        name: u.name || '',
-        email: u.email || '',
-        labels: Array.isArray(u.labels) ? u.labels.map(String) : [],
+        id,
+        name: u?.name || '',
+        email: u?.email || '',
+        labels: Array.isArray(u?.labels) ? u.labels.map(String) : [],
       }
     } finally {
       clearTimeout(t)
     }
   }
 
-  async function resolveUser(secret: string): Promise<GateUser | null> {
-    const key = createHash('sha256').update(secret).digest('hex')
+  async function resolveUser(cookieHeader: string): Promise<GateUser | null> {
+    const key = createHash('sha256').update(cookieHeader).digest('hex')
     const now = Date.now()
     const hit = cache.get(key)
     if (hit && hit.exp > now) return hit.user
     let p = inflight.get(key)
     if (!p) {
-      p = fetchUser(secret).finally(() => inflight.delete(key))
+      p = fetchUser(cookieHeader).finally(() => inflight.delete(key))
       inflight.set(key, p)
     }
     const user = await p
@@ -182,11 +200,11 @@ a.sec{background:#fff;color:#18181b;border:1px solid #d4d4d8}
     // and must not loop, e.g. a relative MANAGER_LOGIN_URL hit on a local preview.
     // The API handler also answers un-prefixed /api/* (internal/dev) → gate that too.
     if (!/^\/(?:acc-db(?:[/?#]|$)|api\/)/.test(req.url || '')) return next()
-    const secret = readCookie(req, cookieName)
-    if (!secret) return unauthenticated(req, res)
+    const cookieHeader = sessionCookieHeader(req)
+    if (!cookieHeader) return unauthenticated(req, res)
     let user: GateUser | null
     try {
-      user = await resolveUser(secret)
+      user = await resolveUser(cookieHeader)
     } catch (err) {
       console.error('[acc-db auth] session check failed:', err instanceof Error ? err.message : err)
       return unavailable(req, res)
@@ -204,6 +222,6 @@ a.sec{background:#fff;color:#18181b;border:1px solid #d4d4d8}
     userFor: (req: IncomingMessage) => users.get(req) || null,
     managerUrl,
     loginUrl,
-    config: { endpoint, projectId, cookieName, allowedRoles },
+    config: { authUrl, cookieNames: [...SESSION_COOKIE_NAMES], allowedRoles },
   }
 }

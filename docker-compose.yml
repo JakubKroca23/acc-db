@@ -42,12 +42,11 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-acc_db}
       # Volitelně; při speciálních znacích v hesle raději spoléhejte na POSTGRES_* výše.
       - DATABASE_URL=${DATABASE_URL:-postgres://${POSTGRES_USER:-acc}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-acc_db}}
-      # Přístup jen pro přihlášené v Contsystem Manageru s rolí (Appwrite label) z ACC_DB_ALLOWED_ROLES.
+      # Přístup jen pro přihlášené v Contsystem Manageru (Better Auth) s rolí z ACC_DB_ALLOWED_ROLES.
       # Vypnutí (nouzově): ACC_DB_AUTH=off v .env a `docker compose up -d`.
       - ACC_DB_AUTH=${ACC_DB_AUTH:-manager}
       - ACC_DB_ALLOWED_ROLES=${ACC_DB_ALLOWED_ROLES:-*}
-      - MANAGER_APPWRITE_ENDPOINT=${MANAGER_APPWRITE_ENDPOINT:-https://appwrite.propoj.app/v1}
-      - MANAGER_APPWRITE_PROJECT_ID=${MANAGER_APPWRITE_PROJECT_ID:-contsystem}
+      - MANAGER_AUTH_URL=${MANAGER_AUTH_URL:-http://cs-zakazky-app:3000}
     depends_on:
       postgres:
         condition: service_healthy

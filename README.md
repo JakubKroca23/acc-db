@@ -34,7 +34,7 @@ S `DATABASE_URL` a nedostupným Postgres → HTTP **503**.
 
 Aplikace je dostupná jen uživatelům přihlášeným v Contsystem Manageru (`cs-zakazky`) s rolí z `ACC_DB_ALLOWED_ROLES`.
 
-- Cookie `a_session_contsystem` → `auth-gate.ts` → Appwrite `/account` (projekt `contsystem`)
+- Cookie `better-auth.session_token` → `auth-gate.ts` → Manager `GET /api/auth/session`
 - Zapnutí: `ACC_DB_AUTH=manager` (v compose výchozí); lokálně bez něj bez přihlášení
 
 ## API (base `/acc-db/`)

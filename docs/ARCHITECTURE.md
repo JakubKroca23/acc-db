@@ -6,13 +6,13 @@ Stručná paměť: [`../AGENTS.md`](../AGENTS.md).
 
 ```
 Browser (zakazky.contsystem.cz/acc-db/)
-  │  cookie a_session_contsystem
+  │  cookie better-auth.session_token / __Secure-better-auth.session_token
   ▼
 Traefik → acc-db-app (vite preview :4173)
   │
   ├─ auth-gate.ts
-  │     GET Appwrite /account (projekt contsystem)
-  │     role = Appwrite labels ∩ ACC_DB_ALLOWED_ROLES
+  │     GET Manager /api/auth/session (MANAGER_AUTH_URL, výchozí http://cs-zakazky-app:3000)
+  │     role = user labels ∩ ACC_DB_ALLOWED_ROLES
   │
   └─ api-handler.ts  /api/*
         ├─ catalog-repo.ts → PostgreSQL (DATABASE_URL)
@@ -42,6 +42,6 @@ UI „Aktualizovat katalog“ volá `POST /api/catalog/update` (token `ACC_DB_UP
 
 Jeden soubor [`src/main.ts`](../src/main.ts): kategorie, filtry, detail, nabídka `#/nabidka`, localStorage cart (`acc-db-cart-v2`). Žádný AI chat widget.
 
-## Auth (zůstává Appwrite jen pro Manager)
+## Auth
 
-Viz `src/server/auth-gate.ts`. Fail closed při nedostupném Appwrite. Nouzově `ACC_DB_AUTH=off`.
+Session cookie Manageru (Better Auth). Viz `src/server/auth-gate.ts`. Fail closed, když Manager neodpoví. Nouzově `ACC_DB_AUTH=off`. Stará cookie `a_session_*` se nepoužívá.

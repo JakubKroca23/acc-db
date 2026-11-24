@@ -36,11 +36,10 @@ Auth (Manager):
 ```
 ACC_DB_AUTH=manager
 ACC_DB_ALLOWED_ROLES=*
-MANAGER_APPWRITE_ENDPOINT=https://appwrite.propoj.app/v1
-MANAGER_APPWRITE_PROJECT_ID=contsystem
+MANAGER_AUTH_URL=http://cs-zakazky-app:3000
 ```
 
-Appwrite TablesDB klíče (`APPWRITE_API_KEY` …) se **nepoužívají**.
+`MANAGER_AUTH_URL` je interní adresa kontejneru Manageru (Better Auth `GET /api/auth/session`). Katalogová data z Appwrite se nečtou.
 
 ## První seed
 

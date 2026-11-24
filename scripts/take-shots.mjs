@@ -30,7 +30,7 @@ async function thumbStats(page) {
 }
 
 const browser = await chromium.launch({ headless: true })
-// Auth gate (ACC_DB_AUTH=manager): pass the Manager session as SHOTS_COOKIE="a_session_contsystem=<secret>"
+// Auth gate (ACC_DB_AUTH=manager): pass the Manager session as SHOTS_COOKIE="__Secure-better-auth.session_token=<secret>"
 const [cookieName, ...cookieRest] = (process.env.SHOTS_COOKIE || '').split('=')
 const cookies = cookieName && cookieRest.length ? [{ name: cookieName, value: cookieRest.join('='), url: new URL(BASE).origin }] : []
 async function newPage(opts) {

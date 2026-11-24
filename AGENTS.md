@@ -20,7 +20,7 @@ Kanonický kontext pro práci v tomto repo. Detaily: [`docs/ARCHITECTURE.md`](do
 | UI | Vite + TypeScript (vanilla DOM), `base: '/acc-db/'` |
 | API | Vite middleware (`src/server/*`) — stejný proces jako preview |
 | Data | **PostgreSQL 16** (`DATABASE_URL`), tabulky `accessories`, `products`, `price_history` |
-| Auth | Contsystem Manager session cookie → Appwrite `/account` (projekt `contsystem`) — **jen login**, ne data |
+| Auth | Contsystem Manager session cookie (Better Auth) → `GET /api/auth/session` — **jen login**, ne data |
 | Ingest | `scripts/scrape_products.py` → `scraped_products.json` → `scripts/seed.mjs` |
 | Deploy | Docker Compose + Traefik na síti `appwrite` |
 
@@ -52,7 +52,7 @@ docs/                  # ARCHITECTURE, DATA-MODEL, DEPLOY
 ## Než saháš do kódu
 
 1. **Nikdy** necommituj `.env`, hesla Postgres, API klíče.
-2. Katalogová data = **Postgres**, ne Appwrite TablesDB. `MANAGER_APPWRITE_*` je jen auth.
+2. Katalogová data = **Postgres**. `MANAGER_AUTH_URL` je jen ověření přihlášení do Manageru.
 3. Bez `DATABASE_URL` → fallback na `scraped_products.json`. S `DATABASE_URL` a pádem PG → **HTTP 503** (ne tichý JSON).
 4. Produkty ve scrapu chybějící se **deaktivují** (`is_active = false`), nemažou se (kvůli `price_history`).
 5. UI jazyk: **čeština**.
